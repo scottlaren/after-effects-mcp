@@ -1,5 +1,5 @@
 ﻿
-
+(function (thisObj) {
 
 
 
@@ -2892,29 +2892,56 @@ if (typeof JSON.stringify !== "function") {
         };
     })();
 }
+
+// ExtendScript's UTF-8 File.write() can stall on non-BMP characters represented
+// as UTF-16 surrogate pairs (for example an emoji in a layer name). Keep the
+// bridge payload ASCII-only on disk; JSON.parse() on the Node side reconstructs
+// the original Unicode string from the \uXXXX escape sequence(s).
+function makeResultFileSafe(jsonText) {
+    var text = "" + jsonText;
+    var out = "";
+    for (var i = 0; i < text.length; i++) {
+        var code = text.charCodeAt(i);
+        if (code > 0x7E) {
+            var hex = code.toString(16).toUpperCase();
+            while (hex.length < 4) hex = "0" + hex;
+            out += "\\u" + hex;
+        } else {
+            out += text.charAt(i);
+        }
+    }
+    return out;
+}
 var aeVersion = parseFloat(app.version);
 var isAE2025OrLater = aeVersion >= 25.0;
 // When launched via Window > mcp-bridge-auto.jsx, AE passes the dockable Panel as
 // top-level `this` - reuse it so the UI lives in ONE clean docked panel (no empty
 // leftover). Fall back to a floating palette only when run via File > Scripts.
-var panel = (this instanceof Panel)
-    ? this
+var externalDriver = $.global.mcpBridgeExternalDriver === true;
+var panel = externalDriver ? null : (thisObj instanceof Panel)
+    ? thisObj
     : new Window("palette", "MCP Bridge Auto", undefined, { resizeable: true });
+// The CEP transport reuses the command handlers without creating a ScriptUI UI.
+var statusText = { text: "" };
+var logText = { text: "" };
+var autoRunCheckbox = { value: true };
+if (!externalDriver) {
 panel.orientation = "column";
 panel.alignChildren = ["fill", "top"];
 panel.spacing = 10;
 panel.margins = 16;
-var statusText = panel.add("statictext", undefined, "Waiting for commands...");
+statusText = panel.add("statictext", undefined, "Waiting for commands...");
 statusText.alignment = ["fill", "top"];
 var logPanel = panel.add("panel", undefined, "Command Log");
 logPanel.orientation = "column";
 logPanel.alignChildren = ["fill", "fill"];
-var logText = logPanel.add("edittext", undefined, "", {multiline: true, readonly: true});
+logText = logPanel.add("edittext", undefined, "", {multiline: true, readonly: true});
 logText.preferredSize.height = 200;
 // (Dockable panels DO work on AE 2025/2026 with the correct ScriptUI pattern below,
 // so the old "floating window only" warning was removed.)
-var autoRunCheckbox = panel.add("checkbox", undefined, "Auto-run commands");
+autoRunCheckbox = panel.add("checkbox", undefined, "Auto-run commands");
 autoRunCheckbox.value = true;
+}
 // How often the panel checks for a new command, in ms. Lowered from 500 to 250
 // to halve per-command latency; the per-check work is tiny (a file existence
 // check), so the CPU cost is negligible and rendering quality is unaffected.
@@ -2928,7 +2955,7 @@ var currentCommandId = "";
 // command under concurrent/rapid tool dispatch). The server matches results purely
 // by _commandId, so AE never needs to write the command file at all.
 var lastProcessedCommandId = "";
-var BRIDGE_VERSION = "1.13.0-mcp-enhanced";
+var BRIDGE_VERSION = "1.13.0-modal-safe.1";
 // Pure read-only commands: they never mutate the project, so we skip the undo
 // group for them (no empty "MCP: ping" entries cluttering Edit > Undo History).
 var READ_ONLY_COMMANDS = {
@@ -4096,9 +4123,9 @@ function executeCommand(command, args) {
         "matchReference": true
     };
     var useUndoGroup = !READ_ONLY_COMMANDS[command] && !NO_UNDO_GROUP_COMMANDS[command];
-    // Suppress any AE modal for the whole execution so a dialog can never block the
-    // single-threaded bridge poll loop (a blocked panel never writes the result file
-    // -> automation hang). endSuppressDialogs(false) below clears it without alerting.
+    // Suppress script error dialogs during execution. This cannot suppress an
+    // already-open modal or protect scheduleTask: AE rejects those at line 0,
+    // before any JavaScript runs. The CEP transport avoids that idle timer.
     var dialogsSuppressed = false;
     try { app.beginSuppressDialogs(); dialogsSuppressed = true; } catch (sdErr) {}
     try {
@@ -4361,6 +4388,7 @@ function executeCommand(command, args) {
                     status: "success",
                     pong: true,
                     bridgeVersion: BRIDGE_VERSION,
+                    transport: externalDriver ? "cep" : "legacy-scheduleTask",
                     aeVersion: (app && app.version ? app.version : null),
                     bridgeFolder: getBridgeFolder().fsName,
                     project: (app.project && app.project.file ? app.project.file.name : "Untitled Project"),
@@ -4399,6 +4427,7 @@ function executeCommand(command, args) {
                 _commandId: currentCommandId
             }, null, 2);
         }
+        resultString = makeResultFileSafe(resultString);
         
         var resultFile = new File(getResultFilePath());
         resultFile.encoding = "UTF-8"; 
@@ -4440,7 +4469,7 @@ function executeCommand(command, args) {
         
         try {
             logToPanel("Attempting to write ERROR to result file...");
-            var errorResult = JSON.stringify({
+            var errorResult = makeResultFileSafe(JSON.stringify({
                 status: "error",
                 command: command,
                 message: error.toString(),
@@ -4453,7 +4482,7 @@ function executeCommand(command, args) {
                 _commandExecuted: command,
                 _commandId: currentCommandId,
                 _responseTimestamp: new Date().toISOString()
-            });
+            }));
             var errorFile = new File(getResultFilePath());
             errorFile.encoding = "UTF-8";
             if (errorFile.open("w")) {
@@ -4474,11 +4503,24 @@ function executeCommand(command, args) {
 
 function logToPanel(message) {
     var timestamp = new Date().toLocaleTimeString();
-    logText.text = timestamp + ": " + message + "\n" + logText.text;
+    logText.text = (timestamp + ": " + message + "\n" + logText.text).slice(0, 16000);
 }
 
+function rejectPendingCommand(commandData, message) {
+    var resultFile = new File(getResultFilePath());
+    resultFile.encoding = "UTF-8";
+    if (!resultFile.open("w")) { throw new Error("Cannot write rejected command result"); }
+    try {
+        resultFile.write(makeResultFileSafe(JSON.stringify({
+            status: "error", error: message, executed: false,
+            _commandId: commandData.commandId || "",
+            _commandExecuted: commandData.command,
+            _responseTimestamp: new Date().toISOString()
+        })));
+    } finally { resultFile.close(); }
+}
 
-function checkForCommands() {
+function checkForCommands(expectedId) {
     // The repeating scheduled task can outlive the panel: when the panel is closed
     // its widgets are destroyed and become invalid. Touching one then throws
     // "Object is invalid" (and the modal blanks the reopened panel). So if our UI is
@@ -4515,18 +4557,33 @@ function checkForCommands() {
                 // next command's write. The result file's _commandId is what the
                 // server matches on, so this dedup is purely AE-local.
                 var commandKey = commandData.commandId || commandData.timestamp || "";
+                // A CEP request may wait behind a modal. Never let its late callback
+                // execute a different command that has since replaced the file.
+                if (expectedId && commandData.commandId !== expectedId) { return "changed"; }
                 if (commandKey && commandKey !== lastProcessedCommandId) {
                     lastProcessedCommandId = commandKey;
                     currentCommandId = commandData.commandId || "";
+                    var validDeadline = typeof commandData.expiresAt === "number" && isFinite(commandData.expiresAt);
+                    if (externalDriver && !validDeadline) {
+                        rejectPendingCommand(commandData, "CEP bridge requires the modal-safe MCP server with command deadlines. Restart the MCP client after switching its server path.");
+                        return "rejected";
+                    }
+                    if (validDeadline && new Date().getTime() >= commandData.expiresAt) {
+                        rejectPendingCommand(commandData, "Command expired while waiting for After Effects. No changes were made. Close any modal dialog before issuing a new command.");
+                        return "expired";
+                    }
                     executeCommand(commandData.command, commandData.args || {});
+                    return "executed";
                 }
             }
         }
     } catch (e) {
         logToPanel("Error checking for commands: " + e.toString());
+        return "error";
+    } finally {
+        isChecking = false;
     }
-    
-    isChecking = false;
+    return "idle";
 }
 
 
@@ -4554,21 +4611,54 @@ function initLastProcessedCommand() {
     }
 }
 
+function stopCommandChecker() {
+    try { if ($.global.mcpCheckTaskId != null) app.cancelTask($.global.mcpCheckTaskId); } catch (e) {}
+    $.global.mcpCheckTaskId = null;
+}
+
 function startCommandChecker() {
     // Cancel any task left scheduled by a previous panel instance. Panels are re-run
     // on close+reopen; without this the old repeating task keeps firing (hitting
     // destroyed widgets) and duplicates accumulate. $.global survives the re-run, so
     // it is where we stash the live task id to find and kill the stale one.
-    try { if ($.global.mcpCheckTaskId != null) app.cancelTask($.global.mcpCheckTaskId); } catch (e) {}
-    $.global.mcpCheckTaskId = app.scheduleTask("checkForCommands()", checkInterval, true);
+    stopCommandChecker();
+    // Persist the transport selection so a saved workspace cannot silently
+    // resurrect the legacy timer after the CEP panel has taken over.
+    if (externalDriver || new File(getBridgeFolder().fsName + "/cep-enabled").exists ||
+            (app.settings.haveSetting("AE-MCP", "transport") &&
+            app.settings.getSetting("AE-MCP", "transport") === "cep")) {
+        if (!externalDriver) {
+            autoRunCheckbox.value = false;
+            autoRunCheckbox.enabled = false;
+            if (checkButton) { checkButton.enabled = false; }
+            statusText.text = "Use Window > Extensions > MCP Bridge";
+        }
+        return;
+    }
+    if (!autoRunCheckbox.value) { return; }
+    // scheduleTask evaluates its string in AE's global engine. Point every scheduled
+    // task at one replaceable global dispatcher instead of a panel-instance function.
+    // When AE restores/recreates a ScriptUI panel, a stale tick can otherwise touch
+    // the old invalid widgets and cancel the newly scheduled task, leaving the UI at
+    // "Auto-run is ON" while no commands are actually polled.
+    $.global.mcpBridgeCheckForCommands = function () {
+        checkForCommands();
+    };
+    $.global.mcpCheckTaskId = app.scheduleTask("$.global.mcpBridgeCheckForCommands()", checkInterval, true);
 }
 
 
+if (!externalDriver) {
+autoRunCheckbox.onClick = function () {
+    if (autoRunCheckbox.value) { startCommandChecker(); } else { stopCommandChecker(); }
+};
+panel.onClose = function () { stopCommandChecker(); };
 var checkButton = panel.add("button", undefined, "Check for Commands Now");
 checkButton.onClick = function() {
     logToPanel("Manually checking for commands");
     checkForCommands();
 };
+}
 
 
 logToPanel("MCP Bridge Auto started");
@@ -4579,8 +4669,22 @@ statusText.text = "Ready - Auto-run is " + (autoRunCheckbox.value ? "ON" : "OFF"
 initLastProcessedCommand();
 startCommandChecker();
 
+if (externalDriver) {
+    app.settings.saveSetting("AE-MCP", "transport", "cep");
+    $.global.mcpExternalBridge = {
+        dispatch: function (id) { return checkForCommands(id); },
+        info: function () {
+            return JSON.stringify({ version: BRIDGE_VERSION, transport: "cep",
+                bridgeFolder: getBridgeFolder().fsName, lastCommandId: lastProcessedCommandId });
+        }
+    };
+    // Old, already-loaded panels use this replaceable global callback.
+    $.global.mcpBridgeCheckForCommands = function () {};
+}
 
-if (panel instanceof Window) {
+if (externalDriver) {
+    // No scheduleTask, no palette, and no AE callbacks while the bridge is idle.
+} else if (panel instanceof Window) {
     // Floating palette path (File > Scripts > Run Script File)
     panel.layout.layout(true);
     panel.center();
@@ -4596,4 +4700,4 @@ if (panel instanceof Window) {
     panel.layout.resize();
     panel.onResizing = panel.onResize = function () { this.layout.resize(); };
 }
-
+})(this);

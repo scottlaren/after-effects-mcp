@@ -1,6 +1,6 @@
 {
   "name": "after-effects-mcp",
-  "version": "1.13.0",
+  "version": "1.13.0-modal-safe.1",
   "description": "MCP server that gives AI assistants deep programmatic control of Adobe After Effects: arbitrary ExtendScript execution, background rendering, deep project/layer inspection, and native Arabic/RTL and multilingual support.",
   "main": "build/index.js",
   "bin": {
@@ -9,6 +9,7 @@
   "files": [
     "build/",
     "install-bridge.js",
+    "install-modal-safe.ps1",
     "docs/",
     "README.md",
     "README.ar.md",
@@ -21,13 +22,13 @@
   "type": "module",
   "author": "Abdelrahman Youssef",
   "license": "MIT",
-  "homepage": "https://github.com/a-y-ibrahim/after-effects-mcp#readme",
+  "homepage": "https://github.com/scottlaren/after-effects-mcp#readme",
   "repository": {
     "type": "git",
-    "url": "https://github.com/a-y-ibrahim/after-effects-mcp.git"
+    "url": "https://github.com/scottlaren/after-effects-mcp.git"
   },
   "bugs": {
-    "url": "https://github.com/a-y-ibrahim/after-effects-mcp/issues"
+    "url": "https://github.com/scottlaren/after-effects-mcp/issues"
   },
   "keywords": [
     "after-effects",
@@ -48,7 +49,7 @@
   },
   "scripts": {
     "clean": "node -e \"require('fs').rmSync('build',{recursive:true,force:true})\"",
-    "build": "npm run clean && tsc && node -e \"require('fs').cpSync('src/scripts','build/scripts',{recursive:true})\"",
+    "build": "npm run clean && tsc && node -e \"const fs=require('fs');fs.cpSync('src/scripts','build/scripts',{recursive:true});fs.cpSync('src/cep','build/cep',{recursive:true});fs.copyFileSync('src/scripts/mcp-bridge-auto.jsx','build/cep/mcp-bridge-auto.jsx')\"",
     "start": "node build/index.js",
     "install-bridge": "node install-bridge.js",
     "typecheck": "tsc --noEmit",

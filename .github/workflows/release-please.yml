@@ -14,6 +14,7 @@ permissions:
 jobs:
   release-please:
     name: release-please
+    if: github.repository == 'a-y-ibrahim/after-effects-mcp'
     runs-on: ubuntu-latest
     permissions:
       contents: write

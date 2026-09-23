@@ -7,6 +7,7 @@ import * as os from "os";
 import * as path from "path";
 import { randomUUID } from "crypto";
 import { z } from "zod";
+import { ACTION_LABEL_ERROR, isEnglishActionLabel } from "./cep/action-label.cjs";
 import { fileURLToPath } from "url";
 import {
   bridgeToolResult,
@@ -43,7 +44,7 @@ import {
 
 const server = new McpServer({
   name: "AfterEffectsServer",
-  version: "1.0.0",
+  version: "1.13.0-modal-safe.1",
 });
 
 const __filename = fileURLToPath(import.meta.url);
@@ -174,7 +175,11 @@ async function waitForBridgeResult(
   });
 }
 
-function writeCommandFile(command: string, args: Record<string, any> = {}): string {
+function writeCommandFile(
+  command: string,
+  args: Record<string, any> = {},
+  timeoutMs = 7000,
+): string {
   try {
     const commandFile = path.join(getAETempDir(), "ae_command.json");
     const commandId = nextCommandId();
@@ -184,6 +189,9 @@ function writeCommandFile(command: string, args: Record<string, any> = {}): stri
       args,
       commandId,
       timestamp: new Date().toISOString(),
+      // Checked inside AE, after any modal dialog has released the script engine.
+      // A queued CEP evalScript must not apply edits after the caller timed out.
+      expiresAt: Date.now() + timeoutMs,
       status: "pending",
     };
     atomicWriteSync(commandFile, JSON.stringify(commandData, null, 2));
@@ -240,7 +248,7 @@ async function sendBridgeCommand(
 ): Promise<string> {
   return bridgeMutex(async () => {
     clearResultsFile();
-    const id = writeCommandFile(command, args);
+    const id = writeCommandFile(command, args, timeoutMs);
     if (!id) {
       return JSON.stringify({
         status: "error",
@@ -419,21 +427,22 @@ server.tool("get-help", "Get help on using the After Effects MCP integration", {
 
 To use this integration with After Effects, follow these steps:
 
- 1. **Install the scripts in After Effects**
-   - Run \`node install-bridge.js\` with administrator privileges
-   - This copies the necessary scripts to your After Effects installation
+1. **Install the modal-safe bridge on Windows**
+   - Build this fork, then run \`powershell -NoProfile -File ./install-modal-safe.ps1\`
+   - The installer copies a local CEP panel and saves backups for rollback
 
 2. **Open After Effects**
    - Launch Adobe After Effects 
    - Open a project that you want to work with
 
-3. **Open the MCP Bridge Auto panel**
-   - In After Effects, go to Window > mcp-bridge-auto.jsx
-   - The panel will automatically check for commands every few seconds
+3. **Open the MCP Bridge panel**
+   - Restart After Effects, then go to Window > Extensions > MCP Bridge
+   - Keep the panel open; it checks files outside AE's script engine
+   - Close any modal dialog before sending commands
 
 4. **Run scripts through MCP**
    - Use the \`run-script\` tool to queue a command
-   - The Auto panel will detect and run the command automatically
+   - The CEP panel will detect and run the command automatically
    - Results will be saved to a temp file
 
 5. **Get results through MCP**
@@ -1691,7 +1700,7 @@ server.tool(
             type: "text",
             text:
               `Bridge test effects command has been queued.\n` +
-              `Please ensure the "MCP Bridge Auto" panel is open in After Effects.\n` +
+              `Please ensure the "MCP Bridge" panel is open in After Effects.\n` +
               `Use the "get-results" tool after a few seconds to check for the test results.`,
           },
         ],
@@ -2558,11 +2567,11 @@ server.tool(
 
 // Bump this whenever the bridge .jsx protocol changes, and keep it in sync with
 // BRIDGE_VERSION in src/scripts/mcp-bridge-auto.jsx. check-bridge warns on mismatch.
-const EXPECTED_BRIDGE_VERSION = "1.13.0-mcp-enhanced";
+const EXPECTED_BRIDGE_VERSION = "1.13.0-modal-safe.1";
 
 server.tool(
   "check-bridge",
-  "Health check: verify the After Effects MCP Bridge panel is open and responding, report its version, the AE version, the shared bridge folder, and the open project/active comp. Run this FIRST when anything times out or behaves oddly. If it reports a version mismatch, re-run `npm run install-bridge` and restart After Effects.",
+  "Health check: verify the After Effects MCP Bridge panel is open and responding; report the transport, versions, bridge folder and active project. Close modal dialogs before checking. If versions mismatch, rebuild this fork, run install-modal-safe.ps1 and restart AE and the MCP client. Open Window > Extensions > MCP Bridge.",
   {},
   async () => {
     try {
@@ -2609,8 +2618,8 @@ server.tool(
                     ? "Stale bridge panel: it answers ping but does NOT echo _commandId, so the server cannot match its results and every tool will time out. An OLD panel build is still loaded in After Effects."
                     : "No response from the bridge panel.",
                   hint: stalePanelDetected
-                    ? "Reload the current panel: run `npm run install-bridge`, then FULLY quit and reopen After Effects, reopen Window > mcp-bridge-auto.jsx, and restart the MCP client. (The version string alone is unreliable - a stale panel can still report the right version.)"
-                    : "Open After Effects and open the panel via Window > mcp-bridge-auto.jsx (keep it open). Ensure 'Allow Scripts to Write Files and Access Network' is enabled. Also confirm the AE_MCP_BRIDGE_DIR env var (if set) matches on both sides.",
+                    ? "Run install-modal-safe.ps1 from this fork, restart After Effects and the MCP client, then open Window > Extensions > MCP Bridge."
+                    : "Close any modal dialog. Open Window > Extensions > MCP Bridge and keep it open. Enable 'Allow Scripts to Write Files and Access Network'. Confirm AE_MCP_BRIDGE_DIR, if set, matches on both sides. Do not automatically retry timed-out edits: a command already executing may still finish.",
                   expectedBridgeVersion: EXPECTED_BRIDGE_VERSION,
                   raw,
                 },
@@ -2632,11 +2641,12 @@ server.tool(
                 ok: true,
                 bridgeResponding: true,
                 bridgeVersion: parsed.bridgeVersion,
+                transport: parsed.transport || "legacy",
                 expectedBridgeVersion: EXPECTED_BRIDGE_VERSION,
                 versionMatch,
                 versionWarning: versionMatch
                   ? null
-                  : "Bridge panel is an OLDER/DIFFERENT version than this server. New tools (execute-script, render queue) may return 'Unknown command'. Fix: run `npm run install-bridge`, then restart After Effects and reopen the panel.",
+                  : "Bridge panel differs from this server. Run install-modal-safe.ps1 from this fork, restart AE, and open Window > Extensions > MCP Bridge.",
                 aeVersion: parsed.aeVersion,
                 bridgeFolder: parsed.bridgeFolder,
                 project: parsed.project,
@@ -3506,12 +3516,21 @@ server.tool(
 
 server.tool(
   "execute-script",
-  'Run ARBITRARY ExtendScript (the After Effects scripting DOM) inside After Effects and return the result. This is the most powerful tool: use it for anything the dedicated tools do not cover - masks, track mattes, parenting, 3D layers/cameras/lights, blending modes, precomposing, time remapping, layer styles, text animators, puppet pins, importing/replacing footage, batch edits across many layers, project-wide changes, etc. Your code runs as the body of a function, so use `return <value>;` to send data back, and return only JSON-serializable values (numbers, strings, arrays, plain objects). The whole script already runs inside one undo group, so do NOT call app.beginUndoGroup yourself. Use `app` and `app.project` to reach everything. On error you get back the message and line number. Example script: "var c = app.project.activeItem; return { name: c.name, layers: c.numLayers };"',
+  'Run ARBITRARY ExtendScript (the After Effects scripting DOM) inside After Effects and return the result. Every call requires a specific English description of what the script will inspect or change, regardless of the conversation language. Write a natural action phrase such as "Inspect layer timing and expressions" or "Save the updated animation to the project", never "Run script". This is the most powerful tool: use it for anything the dedicated tools do not cover - masks, track mattes, parenting, 3D layers/cameras/lights, blending modes, precomposing, time remapping, layer styles, text animators, puppet pins, importing/replacing footage, batch edits across many layers, project-wide changes, etc. Your code runs as the body of a function, so use `return <value>;` to send data back, and return only JSON-serializable values (numbers, strings, arrays, plain objects). The whole script already runs inside one undo group, so do NOT call app.beginUndoGroup yourself. Use `app` and `app.project` to reach everything. On error you get back the message and line number. Example script: "var c = app.project.activeItem; return { name: c.name, layers: c.numLayers };"',
   {
     script: z
       .string()
       .describe(
         "ExtendScript code to execute. Runs as a function body; use 'return value;' to return JSON-serializable data. Do not call app.beginUndoGroup (handled automatically).",
+      ),
+    description: z
+      .string({ required_error: ACTION_LABEL_ERROR })
+      .trim()
+      .min(1)
+      .max(160)
+      .refine(isEnglishActionLabel, { message: ACTION_LABEL_ERROR })
+      .describe(
+        'Required English description for the panel history. Explain the actual action and its target in a natural phrase, usually 5-14 words: "Inspect layer timing and expressions in the main composition", "Stagger the new text layers from top to bottom", "Save the updated animation to the project". Match the script\'s purpose, not just "Run script", "Execute code" or another generic placeholder. Use English even when the conversation is in another language. Describe intent, not unverified success. Put non-English object names in double quotes, e.g. Create layer "Квадрат". Invalid descriptions are rejected before dispatch. Do not include code, secrets or full file paths.',
       ),
     timeoutMs: z
       .number()
@@ -3523,9 +3542,14 @@ server.tool(
         "How long to wait for the result, in milliseconds (default 60000). Increase for long-running scripts.",
       ),
   },
-  async ({ script, timeoutMs = 60000 }) => {
+  async ({ script, description, timeoutMs = 60000 }) => {
     try {
-      const result = await sendBridgeCommand("executeScript", { script }, timeoutMs, 250);
+      const result = await sendBridgeCommand(
+        "executeScript",
+        { script, description },
+        timeoutMs,
+        250,
+      );
       return bridgeToolResult(result);
     } catch (error) {
       return {
@@ -4067,6 +4091,7 @@ server.tool(
           await sendBridgeCommand(
             "executeScript",
             {
+              description: "Save the project before starting the background render",
               script:
                 "if (app.project.file) { app.project.save(); return app.project.file.fsName; } else { return null; }",
             },

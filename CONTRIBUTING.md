@@ -1,5 +1,10 @@
 # Contributing
 
+For this fork, start with [the Windows CEP setup](README.md#setup) and
+[the transport design and acceptance checks](docs/MODAL-SAFE.md). The upstream
+release automation described below is disabled in forks; this repository is not
+published to the upstream npm package.
+
 Thanks for your interest in improving After Effects MCP. This guide covers local
 setup, the test workflow, and the conventions the project follows.
 
@@ -12,7 +17,7 @@ setup, the test workflow, and the conventions the project follows.
 ## Local setup
 
 ```bash
-git clone https://github.com/a-y-ibrahim/after-effects-mcp.git
+git clone https://github.com/scottlaren/after-effects-mcp.git
 cd after-effects-mcp
 npm install            # installs deps and builds
 git config core.hooksPath .githooks   # enable the commit-message hook (see below)
@@ -33,6 +38,8 @@ runs the same checks on Linux, macOS, and Windows across Node 18, 20, and 22.
 ## How the project is laid out
 
 - `src/index.ts`: the MCP server, tool definitions and the file-bridge dispatch.
+- `src/cep/`: the CEP panel, session history and file polling driver. Idle polling
+  must not call ExtendScript; actual commands are dispatched once through CEP.
 - `src/lib/bridge-core.ts`: pure, unit-tested helpers (result parsing, preset
   path resolution, id generation). Put logic here when it can be tested without
   a running server or a live After Effects.

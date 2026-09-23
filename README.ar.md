@@ -1,5 +1,9 @@
 # أداة After Effects MCP - النسخة المحسنة متعددة اللغات
 
+> This fork uses the **MCP Bridge** CEP panel on Windows. Follow the updated
+> [installation instructions](README.md#setup) or [technical guide](docs/MODAL-SAFE.md).
+> The upstream ScriptUI installation described below does not install the new panel.
+
 [![CI](https://github.com/a-y-ibrahim/after-effects-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/a-y-ibrahim/after-effects-mcp/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18-339933?logo=node.js&logoColor=white)](https://nodejs.org)
@@ -14,13 +18,9 @@ After Effects بـ**أي لغة واجهة**.
 هذه نسخة محسنة مبنية على العمل الأصلي لـ
 [**Dakkshin/after-effects-mcp**](https://github.com/Dakkshin/after-effects-mcp). انظر [CREDITS.md](CREDITS.md).
 
-https://github.com/user-attachments/assets/af6419bd-5854-46f7-a0ba-49231697eb18
-
-_بُنيت ورُندرت بالكامل من طلب واحد، بدون أي تحريك يدوي (keyframing)._
-
 ---
 
-## ✨ لماذا هذه النسخة
+## لماذا هذه النسخة
 
 | الجانب                 | هذه النسخة                                                                                                                   |
 | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
@@ -36,7 +36,7 @@ _بُنيت ورُندرت بالكامل من طلب واحد، بدون أي �
 
 ---
 
-## 📋 المتطلبات
+## المتطلبات
 
 - **Adobe After Effects** 2022 أو أحدث
 - **ويندوز أو ماك.** After Effects نفسه لا يعمل إلا على هذين النظامين، لذا يعمل
@@ -45,7 +45,7 @@ _بُنيت ورُندرت بالكامل من طلب واحد، بدون أي �
 - **Node.js 18+** - <https://nodejs.org>
 - عميل MCP (مثل **Claude Code**: `npm install -g @anthropic-ai/claude-code`)
 
-## 🚀 التثبيت
+## التثبيت
 
 ```bash
 git clone https://github.com/a-y-ibrahim/after-effects-mcp.git
@@ -69,12 +69,12 @@ claude mcp add AfterEffectsMCP node /المسار/المطلق/إلى/after-effe
 **أول اختبار:** اطلب من العميل _«check the After Effects bridge»_. يجب أن يرد بـ
 `bridgeVersion: 1.13.0-mcp-enhanced` و`versionMatch: true`.
 
-> 💡 إن عدلت الخادم، أعد `npm run build` ثم أعد تشغيل عميل MCP.
+> إن عدلت الخادم، أعد `npm run build` ثم أعد تشغيل عميل MCP.
 > إن عدلت الجسر، أعد أيضا `npm run install-bridge` وأعد تشغيل After Effects.
 
 ---
 
-## 🧰 الأدوات بإيجاز
+## الأدوات بإيجاز
 
 **الفحص والتشخيص** - `see-frame`، `contact-sheet`، `match-reference`، `inspect-comp`، `inspect-layer`، `get-results`، `check-bridge`، `run-bridge-test`، `get-help`
 **الكومبوزيشن والطبقات** - `create-composition`، `set-composition-properties`، `create-text-layer`، `localize-comp`، `create-camera`، `create-adjustment-layer`، `duplicate-layer`، `delete-layer`، `center-layers`، `set-layer-mask`، `batch-set-layer-properties`، `set-layer-parent`، `reorder-layer`، `precompose-layers`، `populate-template`
@@ -90,7 +90,7 @@ claude mcp add AfterEffectsMCP node /المسار/المطلق/إلى/after-effe
 
 ---
 
-## 🌙 مثال عربي / RTL
+## مثال عربي / RTL
 
 > «أنشئ طبقة نص تقول ‹مرحبا بالعالم›»
 
@@ -100,7 +100,7 @@ claude mcp add AfterEffectsMCP node /المسار/المطلق/إلى/after-effe
 
 ---
 
-## 🩺 حل المشكلات
+## حل المشكلات
 
 - **أي تجمد / سلوك غريب** ← اطلب أولا _«check the After Effects bridge»_.
 - **تحذير عدم تطابق النسخة** ← أعد `npm run install-bridge` وأعد تشغيل After Effects.
@@ -109,7 +109,7 @@ claude mcp add AfterEffectsMCP node /المسار/المطلق/إلى/after-effe
 
 ---
 
-## 📄 الحقوق والترخيص
+## الحقوق والترخيص
 
 مرخص بموجب **رخصة MIT**. العمل الأصلي © 2025 Dakkshin؛ النسخة المحسنة متعددة اللغات
 © 2026 Abdelrahman Youssef. انظر [LICENSE](LICENSE) و[CREDITS.md](CREDITS.md).

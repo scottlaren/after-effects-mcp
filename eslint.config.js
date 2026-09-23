@@ -19,6 +19,11 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
+    files: ["src/cep/*.cjs"],
+    languageOptions: { globals: { module: "readonly", require: "readonly" } },
+    rules: { "@typescript-eslint/no-require-imports": "off" },
+  },
+  {
     rules: {
       // This is a pragmatic bridge codebase: `any` is used deliberately at the
       // JSON boundary (bridge results are untyped). Keep it allowed, and treat
