@@ -12,6 +12,8 @@ compositions, layers, animation, effects, rendering and ExtendScript.
   automatically retried.
 - The panel follows AE's native theme and shows named actions, status and duration.
   Newest actions appear first; history resets when the panel opens.
+  Durations hide in narrow panels. **Connection details > Command language**
+  switches new action descriptions between English (default) and Russian.
 
 Close AE dialogs before sending commands. AE's restriction on running scripts
 through an open modal dialog still applies.

@@ -149,6 +149,7 @@ function driverHarness() {
   const dispatch = vi.fn(async () => "executed");
   const options = {
     now: () => clock,
+    getHistoryLanguage: vi.fn(() => "en"),
     readCommand: () => command,
     readResult: () => result,
     writeResult: (value: any) => {
@@ -408,6 +409,56 @@ describe("CEP file polling", () => {
     await h.driver.tick();
     expect(h.options.onEvent).toHaveBeenLastCalledWith(
       expect.objectContaining({ label: 'Create layer "Квадрат"' }),
+    );
+  });
+
+  it("uses the selected language for new requests without restarting or replaying rejected edits", async () => {
+    const h = driverHarness();
+    h.options.getHistoryLanguage.mockReturnValue("ru");
+    h.send("english", 2000, { description: "Inspect layer timing" });
+    await h.driver.tick();
+    expect(h.dispatch).not.toHaveBeenCalled();
+    expect(h.result()).toMatchObject({
+      executed: false,
+      historyLanguage: "ru",
+      code: "ACTION_DESCRIPTION_REQUIRED",
+    });
+    expect(h.result().error).toContain("specific Russian action description");
+    h.send("russian", 2000, { description: 'Проверить тайминг слоёв в композиции "Main"' });
+    h.setResult({ _commandId: "russian", status: "success" });
+    await h.driver.tick();
+    expect(h.dispatch).toHaveBeenCalledTimes(1);
+    expect(h.options.onEvent).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        type: "succeeded",
+        label: 'Проверить тайминг слоёв в композиции "Main"',
+      }),
+    );
+    h.options.getHistoryLanguage.mockReturnValue("en");
+    h.send("english-again", 2000, { description: "Inspect layer timing" });
+    h.setResult({ _commandId: "english-again", status: "success" });
+    await h.driver.tick();
+    expect(h.dispatch).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a running action's language and localizes only subsequent built-in commands", async () => {
+    const h = driverHarness();
+    h.send("english", 2000, { effectName: "Gaussian Blur" }, "applyEffect");
+    h.dispatch.mockImplementationOnce(async () => {
+      h.options.getHistoryLanguage.mockReturnValue("ru");
+      h.setResult({ _commandId: "english", status: "success" });
+      return "executed";
+    });
+    await h.driver.tick();
+    expect(h.options.onEvent.mock.calls.map(([event]) => event.label)).toEqual([
+      "Apply effect · Gaussian Blur",
+      "Apply effect · Gaussian Blur",
+    ]);
+    h.send("russian", 2000, { effectName: "Gaussian Blur" }, "applyEffect");
+    h.setResult({ _commandId: "russian", status: "success" });
+    await h.driver.tick();
+    expect(h.options.onEvent).toHaveBeenLastCalledWith(
+      expect.objectContaining({ label: "Применить эффект · Gaussian Blur" }),
     );
   });
 

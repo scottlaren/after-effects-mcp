@@ -22,7 +22,7 @@ depending on AE; the panel reports that outcome rather than retrying the edit.
 
 The compact header combines **Command History** and three square icon buttons:
 **Pause/Resume**, **Export** and **Clear**, with tooltips and accessible labels.
-The history uses 11px text and compact spacing. Status
+The history uses 12px action text and compact spacing. Status
 stays visible beside **Connection details** at the bottom; expanding it reveals
 labelled version and bridge-folder fields and one connection hint.
 The outer background follows the native AE theme via CEP, including theme-change
@@ -39,6 +39,8 @@ at the bottom; increasing the panel height reveals more of them. One row per
 command updates from running to done, failed,
 skipped or uncertain, with a timestamp and elapsed time. Errors remain visible
 under the action. Pause/resume and connection events are also recorded.
+At panel widths of 280 CSS pixels or less, elapsed time is hidden instead of
+wrapping below the action. Widening the panel restores it; exports always retain it.
 The latest 200 entries are kept only in memory for the current panel
 session. Reopening the panel or restarting AE starts a new history; **Clear**
 empties it immediately. Older versions' saved history is removed on startup and
@@ -52,16 +54,29 @@ dialog and file API without ExtendScript calls. New command dispatch is paused
 while the dialog is open, then the user's previous pause state is restored.
 Cancel leaves history unchanged; file errors are reported in the panel.
 
-Every `execute-script` call requires a specific English `description`, regardless
-of the conversation language. Describe the action and its target in a natural
-phrase, usually 5–14 words: `Inspect layer timing and expressions in the main composition`
-or `Save the updated animation to the project`.
-Existing project, composition and layer names remain unchanged inside double quotes,
-for example `Create layer "Квадрат"`. Labels come from the calling agent, not a
-translation service. Missing descriptions, generic placeholders such as `Run script`
-or `Execute code`, and non-English letters outside quoted names are rejected
-before dispatch, asking the caller to correct the description. This is a syntax
-and placeholder check, not a language detector or a code audit.
+**Connection details > Command language** offers **EN / RU**, with English as the
+default. The choice is saved in `ae_mcp_settings.json` in the shared bridge folder,
+independently of session history. New commands use the selected language; previous
+rows and a command already running retain their original labels. The interface
+and diagnostic messages remain in English. Built-in action names use a local
+dictionary; arbitrary script descriptions come from the calling agent, without
+an external translation service.
+
+Every `execute-script` call requires a specific `description` in the selected
+language, regardless of the conversation language. First read `historyLanguage`
+using `check-bridge` with `settingsOnly: true`; this reads local settings and makes
+no AE call or history entry, and does not claim the connection is healthy. The
+server and CEP read the preference afresh for each request, so switching languages
+does not require a restart after this version is loaded.
+
+Describe the action and target naturally, usually in 5–14 words, for example
+`Inspect layer timing and expressions in the main composition` or
+`Проверить тайминг и выражения слоёв в основной композиции`. Preserve object names
+inside double quotes. Missing descriptions, generic placeholders such as `Run script`
+or `Запустить скрипт`, and text inconsistent with the selected language are rejected
+before dispatch, asking the caller to correct the description. The validation
+checks characters and known placeholders, not language fluency or script intent;
+Russian descriptions may include Latin technical terms.
 The label describes intent;
 the row's status reports whether AE returned success. It is not an independent
 audit of changes made by arbitrary code. With older MCP schemas, the first line
@@ -73,7 +88,8 @@ background-render save template has its own built-in label for compatibility.
 
 Restart/reconnect the MCP client after updating the server to refresh both its
 running process and tool instructions. Reopening only the CEP panel does not
-refresh a client's cached instruction to use the conversation language.
+refresh a client's cached English-only tool instructions. The first update that
+adds the language selector requires both the panel and MCP client to reload.
 
 After updating only these frontend files, close and reopen **MCP Bridge** to load
 them. The MCP server does not need a restart for this UI update. If AE still shows

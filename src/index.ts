@@ -7,7 +7,8 @@ import * as os from "os";
 import * as path from "path";
 import { randomUUID } from "crypto";
 import { z } from "zod";
-import { ACTION_LABEL_ERROR, isEnglishActionLabel } from "./cep/action-label.cjs";
+import { ACTION_LABEL_ERROR, actionLabelError, isActionLabel } from "./cep/action-label.cjs";
+import { readHistoryLanguage } from "./cep/history-settings.cjs";
 import { fileURLToPath } from "url";
 import {
   bridgeToolResult,
@@ -2571,10 +2572,25 @@ const EXPECTED_BRIDGE_VERSION = "1.13.0-modal-safe.1";
 
 server.tool(
   "check-bridge",
-  "Health check: verify the After Effects MCP Bridge panel is open and responding; report the transport, versions, bridge folder and active project. Close modal dialogs before checking. If versions mismatch, rebuild this fork, run install-modal-safe.ps1 and restart AE and the MCP client. Open Window > Extensions > MCP Bridge.",
-  {},
-  async () => {
+  "Health check: verify the After Effects MCP Bridge panel is open and responding; report the transport, versions, bridge folder, active project and historyLanguage. Use settingsOnly: true before execute-script to read the current command-description language (en or ru) without calling After Effects. For a full health check, close modal dialogs first. If versions mismatch, rebuild this fork, run install-modal-safe.ps1 and restart AE and the MCP client. Open Window > Extensions > MCP Bridge.",
+  {
+    settingsOnly: z
+      .boolean()
+      .optional()
+      .describe(
+        "Read the panel's saved historyLanguage without dispatching a command to After Effects. This does not test the connection.",
+      ),
+  },
+  async ({ settingsOnly }) => {
     try {
+      const historyLanguage = readHistoryLanguage(getAETempDir());
+      if (settingsOnly) {
+        return {
+          content: [
+            { type: "text", text: JSON.stringify({ historyLanguage, connectionChecked: false }) },
+          ],
+        };
+      }
       const raw = await sendBridgeCommand("ping", {}, 5000, 200);
       let parsed: any = null;
       try {
@@ -2612,6 +2628,7 @@ server.tool(
               text: JSON.stringify(
                 {
                   ok: false,
+                  historyLanguage,
                   stalePanelDetected,
                   panelReportedVersion,
                   problem: stalePanelDetected
@@ -2639,6 +2656,7 @@ server.tool(
             text: JSON.stringify(
               {
                 ok: true,
+                historyLanguage,
                 bridgeResponding: true,
                 bridgeVersion: parsed.bridgeVersion,
                 transport: parsed.transport || "legacy",
@@ -3516,7 +3534,7 @@ server.tool(
 
 server.tool(
   "execute-script",
-  'Run ARBITRARY ExtendScript (the After Effects scripting DOM) inside After Effects and return the result. Every call requires a specific English description of what the script will inspect or change, regardless of the conversation language. Write a natural action phrase such as "Inspect layer timing and expressions" or "Save the updated animation to the project", never "Run script". This is the most powerful tool: use it for anything the dedicated tools do not cover - masks, track mattes, parenting, 3D layers/cameras/lights, blending modes, precomposing, time remapping, layer styles, text animators, puppet pins, importing/replacing footage, batch edits across many layers, project-wide changes, etc. Your code runs as the body of a function, so use `return <value>;` to send data back, and return only JSON-serializable values (numbers, strings, arrays, plain objects). The whole script already runs inside one undo group, so do NOT call app.beginUndoGroup yourself. Use `app` and `app.project` to reach everything. On error you get back the message and line number. Example script: "var c = app.project.activeItem; return { name: c.name, layers: c.numLayers };"',
+  'Run ARBITRARY ExtendScript (the After Effects scripting DOM) inside After Effects and return the result. Every call requires a specific description of what the script will inspect or change. First read historyLanguage with check-bridge(settingsOnly: true): use English for en (default) or Russian for ru, regardless of the conversation language. Write a natural action phrase, never "Run script" or "Запустить скрипт". This is the most powerful tool: use it for anything the dedicated tools do not cover - masks, track mattes, parenting, 3D layers/cameras/lights, blending modes, precomposing, time remapping, layer styles, text animators, puppet pins, importing/replacing footage, batch edits across many layers, project-wide changes, etc. Your code runs as the body of a function, so use `return <value>;` to send data back, and return only JSON-serializable values (numbers, strings, arrays, plain objects). The whole script already runs inside one undo group, so do NOT call app.beginUndoGroup yourself. Use `app` and `app.project` to reach everything. On error you get back the message and line number. Example script: "var c = app.project.activeItem; return { name: c.name, layers: c.numLayers };"',
   {
     script: z
       .string()
@@ -3528,9 +3546,14 @@ server.tool(
       .trim()
       .min(1)
       .max(160)
-      .refine(isEnglishActionLabel, { message: ACTION_LABEL_ERROR })
+      .superRefine((value, context) => {
+        const language = readHistoryLanguage(getAETempDir());
+        if (!isActionLabel(value, language)) {
+          context.addIssue({ code: z.ZodIssueCode.custom, message: actionLabelError(language) });
+        }
+      })
       .describe(
-        'Required English description for the panel history. Explain the actual action and its target in a natural phrase, usually 5-14 words: "Inspect layer timing and expressions in the main composition", "Stagger the new text layers from top to bottom", "Save the updated animation to the project". Match the script\'s purpose, not just "Run script", "Execute code" or another generic placeholder. Use English even when the conversation is in another language. Describe intent, not unverified success. Put non-English object names in double quotes, e.g. Create layer "Квадрат". Invalid descriptions are rejected before dispatch. Do not include code, secrets or full file paths.',
+        'Required action description for the panel history. Read historyLanguage with check-bridge(settingsOnly: true) before submitting: en means English (default); ru means Russian. Follow the panel preference, regardless of the conversation language. Explain the actual action and target in a natural phrase, usually 5-14 words, e.g. "Inspect layer timing and expressions in the main composition" or "Проверить тайминг и выражения слоёв в основной композиции". Never use "Run script", "Execute code", "Запустить скрипт" or another generic placeholder. Describe intent, not unverified success. Put object names in double quotes and keep their original spelling. Invalid descriptions are rejected before dispatch; correct the metadata in a new request only when the error explicitly says no execution occurred. Do not include code, secrets or full file paths.',
       ),
     timeoutMs: z
       .number()

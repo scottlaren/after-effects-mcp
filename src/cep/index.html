@@ -116,6 +116,7 @@
         display: block;
       }
       #history {
+        --history-muted: #909090;
         flex: 1 1 0;
         min-height: 0;
         overflow: hidden;
@@ -125,6 +126,7 @@
         background: #262626;
         border: 1px solid #3e3e3e;
         border-radius: 5px;
+        font-size: 12px;
         font-variant-numeric: tabular-nums;
       }
       #history:empty::before {
@@ -141,15 +143,18 @@
       }
       .entry-time,
       .entry-duration {
-        font-size: 10px;
-        color: #a0a0a0;
+        font-size: inherit;
+        color: var(--history-muted);
         white-space: nowrap;
+      }
+      .entry-time {
+        margin-right: 2px;
       }
       .entry-label {
         min-width: 0;
       }
       .history-started .entry-label {
-        color: #aaa;
+        color: var(--history-muted);
       }
       .history-succeeded .entry-label {
         color: #eee;
@@ -162,12 +167,11 @@
       }
       .entry-message {
         grid-column: 2 / -1;
-        font-size: 11px;
         white-space: pre-wrap;
         margin-top: 3px;
       }
       .history-info .entry-label {
-        color: #aaa;
+        color: var(--history-muted);
       }
       @media (prefers-reduced-motion: no-preference) {
         button {
@@ -179,20 +183,24 @@
         @supports (-webkit-background-clip: text) {
           /* Only the active label shimmers; completed rows have no animation. */
           .history-started .entry-label {
+            /* Keep the sweep over the text, not unused space in the grid column. */
+            justify-self: start;
+            max-width: 100%;
             background-image: linear-gradient(
-              110deg,
-              #aaa 0%,
-              #aaa 42%,
-              #eee 50%,
-              #aaa 58%,
-              #aaa 100%
+              90deg,
+              var(--history-muted) 0%,
+              var(--history-muted) 38%,
+              #fff 47%,
+              #fff 53%,
+              var(--history-muted) 62%,
+              var(--history-muted) 100%
             );
-            background-size: 250% 100%;
+            background-size: 300% 100%;
             background-position: 100% 0;
             -webkit-background-clip: text;
             background-clip: text;
             -webkit-text-fill-color: transparent;
-            animation: action-shimmer 3s linear infinite;
+            animation: action-shimmer 2.2s linear infinite;
           }
         }
       }
@@ -200,7 +208,6 @@
         0% {
           background-position: 100% 0;
         }
-        82%,
         100% {
           background-position: 0% 0;
         }
@@ -217,8 +224,19 @@
           grid-template-columns: auto minmax(0, 1fr);
         }
         .entry-duration {
-          grid-column: 2;
+          display: none;
         }
+      }
+      .language-buttons {
+        display: inline-flex;
+        gap: 4px;
+      }
+      .language-buttons button {
+        padding-inline: 8px;
+      }
+      .language-buttons button[aria-pressed="true"] {
+        background: #4c4c4c;
+        border-color: #858585;
       }
       details {
         color: var(--host-panel-text, #bcbcbc);
@@ -295,8 +313,8 @@
           <button
             id="pause"
             type="button"
-            aria-label="Pause commands"
-            title="Pause commands"
+            aria-label="Pause new commands"
+            title="Pause new commands; the active command may still finish"
             disabled
           >
             <svg class="icon-pause" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
@@ -310,7 +328,7 @@
             id="export-history"
             type="button"
             aria-label="Export command history"
-            title="Export command history"
+            title="Export command history (.txt)"
             disabled
           >
             <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
@@ -332,11 +350,34 @@
       </div>
       <div id="history" role="log" aria-live="off" aria-labelledby="history-label"></div>
       <details>
-        <summary>
+        <summary title="Connection details and command language">
           <span>Connection details</span>
           <span id="status" role="status" aria-live="polite">Connecting…</span>
         </summary>
         <dl>
+          <dt>Command language</dt>
+          <dd class="language-buttons" role="group" aria-label="Command language">
+            <button
+              id="language-en"
+              type="button"
+              aria-label="EN — English command descriptions"
+              aria-pressed="true"
+              title="English descriptions for new commands"
+              disabled
+            >
+              EN
+            </button>
+            <button
+              id="language-ru"
+              type="button"
+              aria-label="RU — Russian command descriptions"
+              aria-pressed="false"
+              title="Russian descriptions for new commands"
+              disabled
+            >
+              RU
+            </button>
+          </dd>
           <dt>Version</dt>
           <dd id="version">—</dd>
           <dt>Bridge folder</dt>

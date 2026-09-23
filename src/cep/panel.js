@@ -8,6 +8,10 @@
   var history = document.getElementById("history");
   var clearHistory = document.getElementById("clear-history");
   var exportHistoryButton = document.getElementById("export-history");
+  var languageButtons = [
+    document.getElementById("language-en"),
+    document.getElementById("language-ru"),
+  ];
   // History belongs to this panel instance, never to a previous session.
   var historyEntries = [];
   var maxHistory = 200;
@@ -173,6 +177,7 @@
   var root = path.dirname(fileURLToPath(window.location.href.split("?")[0]));
   var createDriver = nodeRequire(path.join(root, "driver.cjs")).createDriver;
   var exportHistory = nodeRequire(path.join(root, "history-export.cjs")).exportHistory;
+  var historySettings = nodeRequire(path.join(root, "history-settings.cjs"));
 
   exportHistoryButton.onclick = function () {
     if (!historyEntries.length) return;
@@ -240,8 +245,35 @@
     }
     var commandFile = path.join(info.bridgeFolder, "ae_command.json");
     var resultFile = path.join(info.bridgeFolder, "ae_mcp_result.json");
+    function syncHistoryLanguage() {
+      var language = historySettings.readHistoryLanguage(info.bridgeFolder);
+      languageButtons.forEach(function (control) {
+        control.setAttribute("aria-pressed", String(control.id === "language-" + language));
+      });
+      return language;
+    }
+    syncHistoryLanguage();
+    languageButtons.forEach(function (control) {
+      control.disabled = false;
+      control.onclick = function () {
+        try {
+          historySettings.writeHistoryLanguage(
+            info.bridgeFolder,
+            control.id === "language-ru" ? "ru" : "en",
+          );
+        } catch (error) {
+          recordHistory({
+            type: "failed",
+            label: "Save command language",
+            message: String(error.message || error),
+          });
+        }
+        syncHistoryLanguage();
+      };
+    });
     driver = createDriver({
       lastId: info.lastCommandId,
+      getHistoryLanguage: syncHistoryLanguage,
       readCommand: function () {
         return readJson(commandFile);
       },
@@ -271,8 +303,10 @@
       paused = !paused;
       driver.setPaused(paused);
       button.classList.toggle("is-paused", paused);
-      button.setAttribute("aria-label", paused ? "Resume commands" : "Pause commands");
-      button.title = paused ? "Resume commands" : "Pause commands";
+      button.setAttribute("aria-label", paused ? "Resume commands" : "Pause new commands");
+      button.title = paused
+        ? "Resume commands"
+        : "Pause new commands; the active command may still finish";
       status.textContent = paused ? "Paused" : driver.isBusy() ? "Running" : "Ready";
       addHistory(paused ? "Paused · active command may still finish" : "Resumed");
     };

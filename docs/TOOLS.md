@@ -6,6 +6,11 @@ it inline. This page is the grouped catalog with each tool's purpose.
 
 When something times out or behaves oddly, run **`check-bridge`** first.
 
+Before `execute-script`, call `check-bridge` with `settingsOnly: true` to read
+`historyLanguage` without calling AE. Supply a specific action `description` in
+English for `en` (default) or Russian for `ru`. The panel's **EN / RU** selector
+controls new descriptions; generic labels such as "Run script" are rejected.
+
 ## Inspection & diagnostics
 
 | Tool              | Purpose                                                                                                                                                                                                                            |

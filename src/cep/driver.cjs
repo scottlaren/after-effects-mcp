@@ -1,14 +1,17 @@
 /* Poll files in CEP's JavaScript runtime, never in AE's ExtendScript scheduler. */
-const { ACTION_LABEL_ERROR, getScriptActionLabel } = require("./action-label.cjs");
+const { actionLabelError, getScriptActionLabel } = require("./action-label.cjs");
 
-function describeCommand(command) {
+function describeCommand(command, language) {
   const args = command.args || {};
   function shortText(value) {
     return typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, 160) : "";
   }
   if (command.command === "executeScript") {
     // Explicit intent only: never guess what arbitrary code actually changes.
-    return getScriptActionLabel(args) || "Describe script action";
+    return (
+      getScriptActionLabel(args, language) ||
+      (language === "ru" ? "Уточнить действие скрипта" : "Describe script action")
+    );
   }
   const labels = {
     ping: "Check connection",
@@ -63,9 +66,65 @@ function describeCommand(command) {
     manageRenderQueue: "Manage render queue",
     startRender: "Render composition",
   };
-  const label = Object.prototype.hasOwnProperty.call(labels, command.command)
-    ? labels[command.command]
-    : "Run command";
+  const russianLabels = {
+    ping: "Проверить подключение",
+    getProjectInfo: "Проверить проект",
+    listCompositions: "Получить список композиций",
+    getLayerInfo: "Проверить слой",
+    createComposition: "Создать композицию",
+    createTextLayer: "Создать текстовый слой",
+    createShapeLayer: "Создать слой-фигуру",
+    createSolidLayer: "Создать заливку",
+    createAdjustmentLayer: "Создать корректирующий слой",
+    createCamera: "Создать камеру",
+    localizeComp: "Перевести композицию",
+    populateTemplate: "Заполнить шаблон",
+    listProjectItems: "Получить список элементов проекта",
+    importFootage: "Импортировать материалы",
+    relinkFootage: "Переподключить исходники",
+    setLayerProperties: "Обновить слой",
+    batchSetLayerProperties: "Обновить слои",
+    setCompositionProperties: "Обновить композицию",
+    setLayerKeyframe: "Добавить ключевой кадр",
+    setLayerExpression: "Задать выражение",
+    applyEffect: "Применить эффект",
+    applyEffectTemplate: "Применить шаблон эффекта",
+    listLayerEffects: "Получить список эффектов слоя",
+    listAvailableEffects: "Получить список доступных эффектов",
+    setEffectProperty: "Обновить эффект",
+    setEffectKeyframe: "Анимировать эффект",
+    animateToAudio: "Анимировать под звук",
+    setPropertyKeyframesBatch: "Добавить ключевые кадры",
+    applyLayerPreset: "Применить пресет",
+    centerLayers: "Центрировать слои",
+    getLayerClipFrames: "Проверить тайминг клипа",
+    getLayerAudioInfo: "Проверить аудио",
+    addMarkersFromArray: "Добавить маркеры",
+    addMarker: "Добавить маркер",
+    setLayerAudioLevels: "Задать уровни звука",
+    removeLayerEffect: "Удалить эффект",
+    bridgeTestEffects: "Проверить эффекты",
+    seeFrame: "Посмотреть кадр",
+    contactSheet: "Собрать обзор кадров",
+    matchReference: "Сравнить с референсом",
+    getLayerFull: "Проверить слой",
+    getCompFull: "Проверить композицию",
+    duplicateLayer: "Дублировать слой",
+    deleteLayer: "Удалить слой",
+    setLayerMask: "Задать маску",
+    setLayerParent: "Задать родительский слой",
+    reorderLayer: "Изменить порядок слоёв",
+    precomposeLayers: "Собрать слои в прекомпозицию",
+    addToRenderQueue: "Добавить в очередь рендеринга",
+    manageRenderQueue: "Настроить очередь рендеринга",
+    startRender: "Отрендерить композицию",
+  };
+  const selected = language === "ru" ? russianLabels : labels;
+  const label = Object.prototype.hasOwnProperty.call(selected, command.command)
+    ? selected[command.command]
+    : language === "ru"
+      ? "Выполнить команду"
+      : "Run command";
   const subject =
     command.command === "applyEffect" || command.command === "removeLayerEffect"
       ? args.effectName || args.effectMatchName || args.effect || args.effectIdentifier
@@ -83,7 +142,7 @@ function createDriver(options) {
   // Logging is observational: a broken history renderer must never interrupt,
   // retry or change a command. Events carry only a bounded display label, never
   // script source or the full arguments/result payload.
-  function emit(type, command, message, startedAt) {
+  function emit(type, command, label, message, startedAt) {
     if (!options.onEvent) return;
     try {
       const time = now();
@@ -91,7 +150,7 @@ function createDriver(options) {
         type,
         time,
         command: command.command,
-        label: describeCommand(command),
+        label,
         commandId: command.commandId,
         message,
         durationMs: startedAt === undefined ? undefined : Math.max(0, time - startedAt),
@@ -122,32 +181,40 @@ function createDriver(options) {
     const command = options.readCommand();
     if (!command || !command.commandId || command.commandId === lastId) return;
     lastId = command.commandId;
+    // Snapshot once: changing the preference cannot relabel an in-flight action.
+    const language = options.getHistoryLanguage ? options.getHistoryLanguage() : "en";
+    const label = describeCommand(command, language);
     if (!Number.isFinite(command.expiresAt)) {
       const message =
         "Restart the MCP client with the modal-safe server: this command has no expiry deadline.";
       reject(command, message);
-      emit("rejected", command, message);
+      emit("rejected", command, label, message);
       options.onStatus("Command skipped. See history.");
       return;
     }
     if (now() >= command.expiresAt) {
       const message = "Command expired before dispatch. No changes were made.";
       reject(command, message);
-      emit("rejected", command, message);
+      emit("rejected", command, label, message);
       options.onStatus("Command skipped. See history.");
       return;
     }
-    // Older server processes may still request labels in the conversation language.
+    // Older servers or stale clients may still send the previous language.
     // Reject bad metadata BEFORE evalScript so the caller can correct it safely.
-    if (command.command === "executeScript" && !getScriptActionLabel(command.args)) {
-      reject(command, ACTION_LABEL_ERROR, { executed: false, code: "ACTION_DESCRIPTION_REQUIRED" });
-      emit("rejected", command, ACTION_LABEL_ERROR);
+    if (command.command === "executeScript" && !getScriptActionLabel(command.args, language)) {
+      const message = actionLabelError(language);
+      reject(command, message, {
+        executed: false,
+        code: "ACTION_DESCRIPTION_REQUIRED",
+        historyLanguage: language,
+      });
+      emit("rejected", command, label, message);
       options.onStatus("Action description required. See history.");
       return;
     }
     busy = true;
     const startedAt = now();
-    emit("started", command, "", startedAt);
+    emit("started", command, label, "", startedAt);
     options.onStatus("Running");
     try {
       const reply = await options.dispatch(command.commandId);
@@ -158,13 +225,13 @@ function createDriver(options) {
           reply +
           "). Close any modal dialog and check the project before issuing a new command. This command was not automatically retried.";
         reject(command, message);
-        emit("uncertain", command, message, startedAt);
+        emit("uncertain", command, label, message, startedAt);
         options.onStatus("Result unknown. See history.");
       } else {
         const failed =
           result.status === "error" || result.success === false || result.error !== undefined;
         const message = failed ? String(result.error || result.message || "Command failed") : "";
-        emit(failed ? "failed" : "succeeded", command, message, startedAt);
+        emit(failed ? "failed" : "succeeded", command, label, message, startedAt);
         options.onStatus(failed ? "Command failed. See history." : "Ready");
       }
     } catch (error) {
@@ -173,7 +240,7 @@ function createDriver(options) {
         String(error) +
         ". Execution status may be unknown; check the project before retrying.";
       reject(command, message);
-      emit("uncertain", command, message, startedAt);
+      emit("uncertain", command, label, message, startedAt);
       options.onStatus("Dispatch failed. See history.");
     } finally {
       busy = false;
