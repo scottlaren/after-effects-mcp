@@ -138,6 +138,8 @@ function createDriver(options) {
   let lastId = options.lastId || "";
   let busy = false;
   let paused = false;
+  // What is running right now, for the panel's status file.
+  let active = null;
 
   // Logging is observational: a broken history renderer must never interrupt,
   // retry or change a command. Events carry only a bounded display label, never
@@ -214,6 +216,7 @@ function createDriver(options) {
     }
     busy = true;
     const startedAt = now();
+    active = { commandId: command.commandId, command: command.command, startedAt };
     emit("started", command, label, "", startedAt);
     options.onStatus("Running");
     try {
@@ -244,6 +247,7 @@ function createDriver(options) {
       options.onStatus("Dispatch failed. See history.");
     } finally {
       busy = false;
+      active = null;
     }
   }
 
@@ -254,6 +258,12 @@ function createDriver(options) {
     },
     isBusy() {
       return busy;
+    },
+    // A snapshot for observers; reading it never touches After Effects.
+    getState() {
+      const state = { state: busy ? "running" : paused ? "paused" : "idle", panelTime: now() };
+      if (active) Object.assign(state, active);
+      return state;
     },
   };
 }

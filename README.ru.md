@@ -63,7 +63,7 @@ powershell -NoProfile -File .\install-modal-safe.ps1
 4. В MCP-клиенте указать запуск `node` с абсолютным путём к `build/index.js`
    из этого форка. Перезапустить подключение клиента.
 5. Запустить `check-bridge`: ожидаются `transport: cep`, `versionMatch: true`
-   и версия `1.13.0-modal-safe.1`.
+   и версия `1.14.0-modal-safe.1`.
 
 Старую панель `mcp-bridge-auto.jsx` открывать больше не нужно. Пакет исходного
 проекта из npm не содержит изменений этого форка.
