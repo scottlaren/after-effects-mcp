@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.1-modal-safe.1](https://github.com/scottlaren/after-effects-mcp/releases/tag/v1.14.1-modal-safe.1) (2026-11-26)
+
+### Bug Fixes
+
+- **render-aerender, render-status:** a render whose aerender crashed, was killed, reported an error, stopped before the last frame or left no output file is now `failed` with the reason, instead of `finished`. Both tools also report `framesDone`, and `percent` when the frame range was given
+- **see-frame:** a reduced preview now matches the real frame scaled down. Blur, noise and other effects sized in pixels were several times too strong in previews, and expressions using `thisComp.width` saw the preview's size. Collapse transformations stays on only when a region is enlarged
+- **contact-sheet, match-reference:** no longer fail with "Error reading XMP metadata from file" on After Effects 2026, which writes a frame PNG only after the script has returned. The comp is now nested and frozen on the needed frame, with no PNG round trip
+- **contact-sheet:** labels show the frame number next to the time and are always left-aligned, so they stay inside their cell
+
+### Upgrade
+
+Rebuild, run `install-modal-safe.ps1`, then restart After Effects and the MCP client.
+
 ## [1.14.0-modal-safe.1](https://github.com/scottlaren/after-effects-mcp/releases/tag/v1.14.0-modal-safe.1) (2026-11-26)
 
 First tagged release of the modal-safe fork. It makes the server easier to drive
