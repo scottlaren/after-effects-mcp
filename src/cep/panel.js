@@ -245,6 +245,27 @@
     }
     var commandFile = path.join(info.bridgeFolder, "ae_command.json");
     var resultFile = path.join(info.bridgeFolder, "ae_mcp_result.json");
+    var statusFile = path.join(info.bridgeFolder, "ae_bridge_status.json");
+    var lastStatusKey = "";
+    var lastStatusTime = 0;
+    // Tell the server what the panel is doing, so a timeout can be explained
+    // (busy, paused, closed). Written here in CEP's JavaScript, which keeps
+    // running while After Effects is blocked; it never calls into After Effects.
+    function writeStatus(forced) {
+      try {
+        var state = forced || driver.getState();
+        var key = state.state + "|" + (state.commandId || "");
+        if (!forced && key === lastStatusKey && state.panelTime - lastStatusTime < 2000) return;
+        lastStatusKey = key;
+        lastStatusTime = state.panelTime;
+        state.bridgeVersion = info.version;
+        var temp = statusFile + ".tmp";
+        fs.writeFileSync(temp, JSON.stringify(state), "utf8");
+        fs.renameSync(temp, statusFile);
+      } catch {
+        // Status is advisory: never let it disturb the command transport.
+      }
+    }
     function syncHistoryLanguage() {
       var language = historySettings.readHistoryLanguage(info.bridgeFolder);
       languageButtons.forEach(function (control) {
@@ -311,6 +332,7 @@
       addHistory(paused ? "Paused · active command may still finish" : "Resumed");
     };
     var timer = window.setInterval(function () {
+      writeStatus();
       driver.tick().catch(function (error) {
         status.textContent = "Bridge error";
         // Filesystem failures can repeat every poll; log a given failure once.
@@ -324,6 +346,7 @@
     window.addEventListener("unload", function () {
       window.clearInterval(timer);
       driver.setPaused(true);
+      writeStatus({ state: "closed", panelTime: Date.now() });
     });
   });
 })();

@@ -2955,7 +2955,7 @@ var currentCommandId = "";
 // command under concurrent/rapid tool dispatch). The server matches results purely
 // by _commandId, so AE never needs to write the command file at all.
 var lastProcessedCommandId = "";
-var BRIDGE_VERSION = "1.13.0-modal-safe.1";
+var BRIDGE_VERSION = "1.14.0-modal-safe.1";
 // Pure read-only commands: they never mutate the project, so we skip the undo
 // group for them (no empty "MCP: ping" entries cluttering Edit > Undo History).
 var READ_ONLY_COMMANDS = {
@@ -3617,67 +3617,127 @@ function _importWithRetry(file) {
 }
 
 // see-frame: render one or more frames of a comp to PNG and return their paths so
-// the Node side can hand the actual pixels back to the model. Renders a downscaled
-// nested comp when maxWidth < comp.width, so AE performs the downscale before any
-// pixels leave the app.
+// the Node side can hand the actual pixels back to the model. Frames are chosen by
+// frame number or by time. A crop region and/or a scale are rendered through a
+// temporary comp nesting the user's comp, so AE does the crop and the scaling
+// before any pixels leave the app. The user's comp is left exactly as it was.
 function seeFrame(args) {
     var tempComp = null;
+    var comp = null;
+    var savedMotionBlur = null;
     try {
         _sweepMcpTempComps();
 
-        var comp = _resolveComp(args);
+        comp = _resolveComp(args);
         if (!comp) {
             return JSON.stringify({ status: "error", error: "Composition not found. Provide compName or compIndex, or open a comp." });
         }
 
         var dur = comp.duration;
-        // Build the list of capture times (clamp into [0, duration]).
-        var times = [];
-        if (args && args.times && args.times.length) {
+        var fd = comp.frameDuration;
+        // Frame numbers are the ones the timeline shows: counted from the comp's
+        // start frame, which is 0 unless the comp has a display start time.
+        var startFrame = Math.round(comp.displayStartTime / fd);
+        var lastIndex = Math.round(dur / fd) - 1; if (lastIndex < 0) lastIndex = 0;
+
+        // Capture points: frame numbers, or times in seconds (clamped into the comp).
+        var points = [];
+        if (args && args.frames && args.frames.length) {
+            for (var f = 0; f < args.frames.length; f++) {
+                var fv = args.frames[f];
+                if (typeof fv === "number" && !isNaN(fv)) {
+                    var idx = Math.round(fv) - startFrame;
+                    if (idx < 0) idx = 0;
+                    if (idx > lastIndex) idx = lastIndex;
+                    // a hair inside the frame, so rounding never lands on the previous one
+                    points.push({ time: idx * fd + fd / 100, shown: Math.round(idx * fd * 10000) / 10000, frame: idx + startFrame });
+                }
+            }
+        } else if (args && args.times && args.times.length) {
             for (var t = 0; t < args.times.length; t++) {
                 var tv = args.times[t];
                 if (typeof tv === "number" && !isNaN(tv)) {
                     if (tv < 0) tv = 0;
                     if (tv > dur) tv = dur;
-                    times.push(tv);
+                    points.push({ time: tv, shown: tv, frame: Math.floor(tv / fd + 0.0001) + startFrame });
                 }
             }
         }
-        if (!times.length) times = [dur / 2];
+        if (!points.length) points = [{ time: dur / 2, shown: dur / 2, frame: Math.floor(dur / 2 / fd + 0.0001) + startFrame }];
 
         var maxWidth = (args && typeof args.maxWidth === "number") ? args.maxWidth : 512;
-        var motionBlur = !!(args && args.motionBlur);
 
-        // Pick the render target: the comp itself, or a temp downscale comp nesting it.
+        // Optional crop, in comp pixels: [x, y, width, height], clamped to the comp.
+        var region = null;
+        if (args && args.region && args.region.length === 4) {
+            var rx = Math.round(args.region[0]), ry = Math.round(args.region[1]);
+            var rw = Math.round(args.region[2]), rh = Math.round(args.region[3]);
+            if (rx < 0) { rw += rx; rx = 0; }
+            if (ry < 0) { rh += ry; ry = 0; }
+            if (rx + rw > comp.width) rw = comp.width - rx;
+            if (ry + rh > comp.height) rh = comp.height - ry;
+            if (rw < 1 || rh < 1) {
+                return JSON.stringify({ status: "error", error: "region is outside the composition (" + comp.width + "x" + comp.height + "). Use [x, y, width, height] in comp pixels." });
+            }
+            region = [rx, ry, rw, rh];
+        }
+
+        // Pick the render target: the comp itself, or a temp comp nesting it, which
+        // lets After Effects crop and scale before any pixels leave the app.
         var target = comp;
-        if (maxWidth > 0 && maxWidth < comp.width) {
-            var tw = Math.round(maxWidth / 2) * 2; if (tw < 2) tw = 2;
-            var th = Math.round((comp.height * tw / comp.width) / 2) * 2; if (th < 2) th = 2;
+        var srcW = region ? region[2] : comp.width;
+        var srcH = region ? region[3] : comp.height;
+        if (region || (maxWidth > 0 && maxWidth < comp.width)) {
+            var tw = srcW, th = srcH, k = 1;
+            if (maxWidth > 0 && maxWidth !== srcW) {
+                k = maxWidth / srcW;
+                if (k > 8) k = 8;                           // zoom into a region: 8x at most
+                if (srcH * k > 4096) k = 4096 / srcH;
+                tw = Math.round(srcW * k / 2) * 2; if (tw < 2) tw = 2;
+                k = tw / srcW;
+                th = Math.round(srcH * k / 2) * 2; if (th < 2) th = 2;
+            }
             tempComp = app.project.items.addComp("__mcp_tmp__seeframe", tw, th, 1, comp.duration, comp.frameRate);
             var nested = tempComp.layers.add(comp);
-            var scalePct = (tw / comp.width) * 100;
-            try { nested.property("ADBE Transform Group").property("ADBE Scale").setValue([scalePct, scalePct]); } catch (e) {}
-            try { nested.property("ADBE Transform Group").property("ADBE Position").setValue([tw / 2, th / 2]); } catch (e) {}
+            var tg = nested.property("ADBE Transform Group");
+            if (region) {
+                try { tg.property("ADBE Anchor Point").setValue([region[0] + region[2] / 2, region[1] + region[3] / 2]); } catch (e) {}
+            }
+            try { tg.property("ADBE Scale").setValue([k * 100, k * 100]); } catch (e) {}
+            try { tg.property("ADBE Position").setValue([tw / 2, th / 2]); } catch (e) {}
             try { nested.collapseTransformation = true; } catch (e) {}
             target = tempComp;
         }
-        try { target.motionBlur = motionBlur; } catch (e) {}
+
+        // motionBlur: true / false, or "comp" to render with the comp's own switch.
+        var mbMode = args ? args.motionBlur : false;
+        var wantBlur = (mbMode === "comp") ? comp.motionBlur : !!mbMode;
+        if (target === comp) {
+            // the user's comp: change its switch only for the render, then put it back
+            if (comp.motionBlur !== wantBlur) {
+                savedMotionBlur = comp.motionBlur;
+                try { comp.motionBlur = wantBlur; } catch (e) { savedMotionBlur = null; }
+            }
+        } else {
+            try { target.motionBlur = wantBlur; } catch (e) {}
+        }
 
         var folder = getBridgeFolder().fsName;
         var frames = [];
         var note = null;
-        for (var i = 0; i < times.length; i++) {
+        for (var i = 0; i < points.length; i++) {
             _seeFrameSeq++;
             var path = folder + "/__mcp_seeframe_" + _seeFrameSeq + "_" + i + ".png";
             try {
-                target.saveFrameToPng(times[i], new File(path));
-                frames.push({ time: times[i], path: path, w: target.width, h: target.height });
+                target.saveFrameToPng(points[i].time, new File(path));
+                frames.push({ time: points[i].shown, frame: points[i].frame, path: path, w: target.width, h: target.height });
             } catch (fe) {
-                note = (note ? note + " " : "") + "Frame at t=" + times[i] + "s failed: " + fe.toString();
+                note = (note ? note + " " : "") + "Frame " + points[i].frame + " (t=" + points[i].shown + "s) failed: " + fe.toString();
             }
         }
 
-        var out = { status: "success", compName: comp.name, frames: frames };
+        var out = { status: "success", compName: comp.name, frameRate: comp.frameRate, compSize: [comp.width, comp.height], frames: frames };
+        if (region) out.region = region;
         if (note) out.note = note;
         if (args && args.includeState) {
             try { out.state = getCompFull({ compName: comp.name }); } catch (se) {}
@@ -3688,6 +3748,7 @@ function seeFrame(args) {
         return JSON.stringify({ status: "error", error: e.toString(), line: (e.line !== undefined ? e.line : null) });
     } finally {
         if (tempComp) { try { tempComp.remove(); } catch (ce) {} }
+        if (comp && savedMotionBlur !== null) { try { comp.motionBlur = savedMotionBlur; } catch (me) {} }
     }
 }
 

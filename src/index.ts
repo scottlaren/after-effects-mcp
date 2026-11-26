@@ -31,6 +31,21 @@ import {
   type FrameFile,
   type ContentBlock,
 } from "./lib/see-frame.js";
+import { annotateScriptResult } from "./lib/script-lint.js";
+import {
+  classifyBridgeState,
+  STATUS_FILE,
+  STATUS_STALE_MS,
+  type BridgeDiagnosis,
+  type PanelStatus,
+} from "./lib/bridge-status.js";
+import { decodePng, encodePng } from "./lib/png.js";
+import {
+  buildDiffImage,
+  diffFrames,
+  safeSnapshotName,
+  snapshotFrameFile,
+} from "./lib/frame-diff.js";
 import {
   amplitudeAtTime,
   buildPeakKeyframes,
@@ -45,7 +60,7 @@ import {
 
 const server = new McpServer({
   name: "AfterEffectsServer",
-  version: "1.13.0-modal-safe.1",
+  version: "1.14.0-modal-safe.1",
 });
 
 const __filename = fileURLToPath(import.meta.url);
@@ -116,6 +131,52 @@ function readResultsFromTempFile(): string {
 let lastCommandId = "";
 const nextCommandId = makeCommandIdFactory();
 
+function readPanelStatus(): PanelStatus | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(getAETempDir(), STATUS_FILE), "utf8"));
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+// Whether an After Effects process exists; null when that cannot be determined.
+function isAfterEffectsRunning(): boolean | null {
+  try {
+    if (process.platform === "win32") {
+      const r = spawnSync("tasklist", ["/FI", "IMAGENAME eq AfterFX*", "/NH", "/FO", "CSV"], {
+        encoding: "utf8",
+        timeout: 4000,
+        windowsHide: true,
+      });
+      if (r.status !== 0 || typeof r.stdout !== "string") return null;
+      return /AfterFX/i.test(r.stdout);
+    }
+    if (process.platform === "darwin") {
+      const r = spawnSync("pgrep", ["-f", "Adobe After Effects"], { timeout: 4000 });
+      if (r.status === 0) return true;
+      if (r.status === 1) return false;
+    }
+  } catch {
+    /* fall through */
+  }
+  return null;
+}
+
+// Why a command got no result: After Effects busy, panel paused or closed, or
+// After Effects not running. Reads the panel's status file; asks the OS for the
+// process only when the panel has gone quiet.
+function diagnoseBridge(commandId: string): BridgeDiagnosis {
+  const status = readPanelStatus();
+  const now = Date.now();
+  const fresh =
+    !!status &&
+    typeof status.panelTime === "number" &&
+    Math.abs(now - status.panelTime) < STATUS_STALE_MS &&
+    status.state !== "closed";
+  return classifyBridgeState(status, now, commandId, fresh ? true : isAfterEffectsRunning());
+}
+
 async function waitForBridgeResult(
   expectedCommand?: string,
   timeoutMs: number = 5000,
@@ -134,6 +195,7 @@ async function waitForBridgeResult(
   // (which collides when the same command runs twice in a row). Captured once,
   // up front, so it can't be clobbered by a later command during the await loop.
   const idToMatch = expectedId || lastCommandId || "";
+  let presenceChecked = false;
 
   while (Date.now() - start < timeoutMs) {
     if (fs.existsSync(resultPath)) {
@@ -168,11 +230,36 @@ async function waitForBridgeResult(
         /* result file briefly unreadable: keep polling */
       }
     }
+    // Nobody can answer when After Effects is not running or the panel is closed:
+    // say so after a moment instead of sitting out the whole timeout. The command
+    // is withdrawn first, so it cannot run later when the panel comes back.
+    if (!presenceChecked && Date.now() - start > 1500) {
+      presenceChecked = true;
+      const early = diagnoseBridge(idToMatch);
+      if (early.bridgeState === "ae-not-running" || early.bridgeState === "panel-closed") {
+        try {
+          const commandFile = path.join(getAETempDir(), "ae_command.json");
+          const pending = JSON.parse(fs.readFileSync(commandFile, "utf8"));
+          if (pending && pending.commandId === idToMatch) fs.unlinkSync(commandFile);
+        } catch {
+          /* nothing to withdraw */
+        }
+        return JSON.stringify({
+          status: "error",
+          error: early.detail,
+          bridgeState: early.bridgeState,
+          executed: false,
+        });
+      }
+    }
     await new Promise((r) => setTimeout(r, delay));
     delay = nextPollDelay(delay, pollMs);
   }
+  const diagnosis = diagnoseBridge(idToMatch);
   return JSON.stringify({
-    error: `Timed out waiting for bridge result${expectedCommand ? ` for command '${expectedCommand}'` : ""}.`,
+    error: `Timed out waiting for bridge result${expectedCommand ? ` for command '${expectedCommand}'` : ""}. ${diagnosis.detail}`,
+    bridgeState: diagnosis.bridgeState,
+    mayStillRun: diagnosis.mayStillRun,
   });
 }
 
@@ -2568,7 +2655,7 @@ server.tool(
 
 // Bump this whenever the bridge .jsx protocol changes, and keep it in sync with
 // BRIDGE_VERSION in src/scripts/mcp-bridge-auto.jsx. check-bridge warns on mismatch.
-const EXPECTED_BRIDGE_VERSION = "1.13.0-modal-safe.1";
+const EXPECTED_BRIDGE_VERSION = "1.14.0-modal-safe.1";
 
 server.tool(
   "check-bridge",
@@ -2628,12 +2715,17 @@ server.tool(
               text: JSON.stringify(
                 {
                   ok: false,
+                  bridgeState: stalePanelDetected
+                    ? "stale-panel"
+                    : (parsed && parsed.bridgeState) || "unknown",
                   historyLanguage,
                   stalePanelDetected,
                   panelReportedVersion,
                   problem: stalePanelDetected
                     ? "Stale bridge panel: it answers ping but does NOT echo _commandId, so the server cannot match its results and every tool will time out. An OLD panel build is still loaded in After Effects."
-                    : "No response from the bridge panel.",
+                    : parsed && parsed.bridgeState
+                      ? String(parsed.error)
+                      : "No response from the bridge panel.",
                   hint: stalePanelDetected
                     ? "Run install-modal-safe.ps1 from this fork, restart After Effects and the MCP client, then open Window > Extensions > MCP Bridge."
                     : "Close any modal dialog. Open Window > Extensions > MCP Bridge and keep it open. Enable 'Allow Scripts to Write Files and Access Network'. Confirm AE_MCP_BRIDGE_DIR, if set, matches on both sides. Do not automatically retry timed-out edits: a command already executing may still finish.",
@@ -3534,7 +3626,7 @@ server.tool(
 
 server.tool(
   "execute-script",
-  'Run ARBITRARY ExtendScript (the After Effects scripting DOM) inside After Effects and return the result. Every call requires a specific description of what the script will inspect or change. First read historyLanguage with check-bridge(settingsOnly: true): use English for en (default) or Russian for ru, regardless of the conversation language. Write a natural action phrase, never "Run script" or "Запустить скрипт". This is the most powerful tool: use it for anything the dedicated tools do not cover - masks, track mattes, parenting, 3D layers/cameras/lights, blending modes, precomposing, time remapping, layer styles, text animators, puppet pins, importing/replacing footage, batch edits across many layers, project-wide changes, etc. Your code runs as the body of a function, so use `return <value>;` to send data back, and return only JSON-serializable values (numbers, strings, arrays, plain objects). The whole script already runs inside one undo group, so do NOT call app.beginUndoGroup yourself. Use `app` and `app.project` to reach everything. On error you get back the message and line number. Example script: "var c = app.project.activeItem; return { name: c.name, layers: c.numLayers };"',
+  'Run ARBITRARY ExtendScript (the After Effects scripting DOM) inside After Effects and return the result. Every call requires a specific description of what the script will inspect or change. First read historyLanguage with check-bridge(settingsOnly: true): use English for en (default) or Russian for ru, regardless of the conversation language. Write a natural action phrase, never "Run script" or "Запустить скрипт". This is the most powerful tool: use it for anything the dedicated tools do not cover - masks, track mattes, parenting, 3D layers/cameras/lights, blending modes, precomposing, time remapping, layer styles, text animators, puppet pins, importing/replacing footage, batch edits across many layers, project-wide changes, etc. Your code runs as the body of a function, so use `return <value>;` to send data back, and return only JSON-serializable values (numbers, strings, arrays, plain objects). The whole script already runs inside one undo group, so do NOT call app.beginUndoGroup yourself. Use `app` and `app.project` to reach everything. On error you get back the message, scriptLine (the line of YOUR script) and its source text; a syntax error also lists likely ES3 causes (reserved words as keys, let/const, arrow functions). Example script: "var c = app.project.activeItem; return { name: c.name, layers: c.numLayers };"',
   {
     script: z
       .string()
@@ -3573,7 +3665,7 @@ server.tool(
         timeoutMs,
         250,
       );
-      return bridgeToolResult(result);
+      return bridgeToolResult(annotateScriptResult(script, result));
     } catch (error) {
       return {
         content: [{ type: "text", text: `Error executing script: ${String(error)}` }],
@@ -3585,7 +3677,7 @@ server.tool(
 
 server.tool(
   "see-frame",
-  "SEE what a composition actually looks like: render one or more frames to images and return them so you can visually verify and self-correct (make a change, look, fix). Use this after edits to catch problems the DOM does not reveal - clipped or empty text, blown-out glow, off-frame layers, wrong colors, or Arabic/RTL text that did not shape correctly. Select the comp by name or 1-based index, or leave empty for the active comp. Returns downscaled preview images by default (maxWidth 512) to keep it fast and cheap; pass maxWidth 0 for a native-resolution still. Note: a still is a still - time-based effects like motion blur may look different from playback.",
+  "SEE what a composition actually looks like: render one or more frames to images and return them so you can visually verify and self-correct (make a change, look, fix). Use this after edits to catch problems the DOM does not reveal - clipped or empty text, blown-out glow, off-frame layers, wrong colors, or Arabic/RTL text that did not shape correctly. Select the comp by name or 1-based index, or leave empty for the active comp. Pick moments by frame number (frames, as the timeline shows them) or by time in seconds (times). Pass region [x, y, width, height] in comp pixels to crop to a detail; maxWidth then sets the width of the crop, so a small region is zoomed in (up to 8x, vectors and text stay sharp). Returns downscaled preview images by default (maxWidth 512) to keep it fast and cheap; pass maxWidth 0 for native resolution. The comp itself is not changed. Note: a still is a still - time-based effects like motion blur may look different from playback.",
   {
     comp: z
       .union([z.string(), z.number().int().positive()])
@@ -3595,7 +3687,20 @@ server.tool(
       .union([z.number(), z.array(z.number())])
       .optional()
       .describe(
-        "Time(s) in seconds to capture. A single number or an array. Defaults to the comp midpoint. Out-of-range values are clamped.",
+        "Time(s) in seconds to capture. A single number or an array. Defaults to the comp midpoint. Out-of-range values are clamped. Ignored when frames is given.",
+      ),
+    frames: z
+      .union([z.number().int(), z.array(z.number().int()).min(1).max(60)])
+      .optional()
+      .describe(
+        "Frame number(s) to capture, as shown in the timeline. A single number or an array. Takes priority over times. Out-of-range values are clamped.",
+      ),
+    region: z
+      .array(z.number())
+      .length(4)
+      .optional()
+      .describe(
+        "Crop to [x, y, width, height] in comp pixels (top-left origin). With maxWidth it becomes a zoom: the crop is scaled to that width.",
       ),
     maxWidth: z
       .number()
@@ -3604,7 +3709,7 @@ server.tool(
       .max(4096)
       .optional()
       .describe(
-        "Max preview width in pixels (default 512, aspect preserved). Use 0 for a guaranteed-faithful native-resolution frame.",
+        "Max preview width in pixels (default 512, aspect preserved). Use 0 for a guaranteed-faithful native-resolution frame. With region: the output width of the crop (may enlarge it, up to 8x); 0 keeps the crop at native size.",
       ),
     includeState: z
       .boolean()
@@ -3627,6 +3732,8 @@ server.tool(
   async ({
     comp,
     times,
+    frames: frameNumbers,
+    region,
     maxWidth = 512,
     includeState = false,
     motionBlur = false,
@@ -3640,6 +3747,13 @@ server.tool(
           compName: typeof comp === "string" ? comp : undefined,
           compIndex: typeof comp === "number" ? comp : undefined,
           times: times === undefined ? undefined : Array.isArray(times) ? times : [times],
+          frames:
+            frameNumbers === undefined
+              ? undefined
+              : Array.isArray(frameNumbers)
+                ? frameNumbers
+                : [frameNumbers],
+          region,
           maxWidth,
           includeState,
           motionBlur,
@@ -3671,7 +3785,9 @@ server.tool(
 
       const b64ByPath = new Map<string, string>();
       const framePaths = frames.filter((f) => f && f.path).map((f) => f.path);
-      const b64Results = await Promise.all(framePaths.map((p) => readScratchPngBase64(p)));
+      const b64Results = await Promise.all(
+        framePaths.map((p) => readScratchPngBase64(p, 15000 + 2000 * framePaths.length)),
+      );
       framePaths.forEach((p, i) => {
         const b64 = b64Results[i];
         if (b64 !== null) b64ByPath.set(p, b64);
@@ -3679,6 +3795,12 @@ server.tool(
       const readBase64 = (p: string): string | null => b64ByPath.get(p) ?? null;
 
       const content: ContentBlock[] = buildFrameContent(compName, frames, readBase64, stateJson);
+      if (Array.isArray(parsed.region)) {
+        content.push({
+          type: "text",
+          text: `Cropped to region [${parsed.region.join(", ")}] of the ${(parsed.compSize || []).join("x")} comp.`,
+        });
+      }
       if (parsed.note) content.push({ type: "text", text: String(parsed.note) });
       const anyImage = content.some((b) => b.type === "image");
       return { content, isError: anyImage ? false : true };
@@ -3707,18 +3829,23 @@ server.tool(
 // works around the same lag with _importWithRetry). Poll until the file is a
 // structurally complete PNG before accepting the bytes. The timeout is generous
 // because a multi-frame batch renders sequentially after the script returns.
-async function readScratchPngBase64(p: string, timeoutMs = 15000): Promise<string | null> {
+async function readScratchPng(p: string, timeoutMs = 15000): Promise<Buffer | null> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     try {
       const buf = fs.readFileSync(p);
-      if (isCompletePng(buf)) return buf.toString("base64");
+      if (isCompletePng(buf)) return buf;
     } catch {
       // not written yet
     }
     if (Date.now() >= deadline) return null;
     await new Promise((r) => setTimeout(r, 100));
   }
+}
+
+async function readScratchPngBase64(p: string, timeoutMs = 15000): Promise<string | null> {
+  const buf = await readScratchPng(p, timeoutMs);
+  return buf ? buf.toString("base64") : null;
 }
 
 // Read scratch PNGs listed in a bridge result into MCP image blocks, then delete
@@ -3763,6 +3890,318 @@ async function imageResultFromPaths(
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// compare-frames: "did my change alter the picture?" Keep a named snapshot of
+// chosen frames, change the project, then compare pixel by pixel. Snapshots live
+// in the bridge folder, outside the project, so the project is never touched.
+// ---------------------------------------------------------------------------
+function snapshotRoot(): string {
+  return path.join(getAETempDir(), "snapshots");
+}
+
+// Render native-size frames through the seeFrame bridge command and hand back the
+// PNG bytes keyed by frame number. Scratch files are removed.
+async function renderNativeFrames(
+  comp: string | number | undefined,
+  frames: number[],
+  region: number[] | undefined,
+  timeoutMs: number,
+): Promise<
+  | {
+      ok: true;
+      compName: string;
+      compSize: number[];
+      region?: number[];
+      frames: Map<number, Buffer>;
+    }
+  | { ok: false; raw: string }
+> {
+  const raw = await sendBridgeCommand(
+    "seeFrame",
+    {
+      compName: typeof comp === "string" ? comp : undefined,
+      compIndex: typeof comp === "number" ? comp : undefined,
+      frames,
+      region,
+      maxWidth: 0,
+      includeState: false,
+      motionBlur: "comp",
+    },
+    timeoutMs,
+    250,
+  );
+  let parsed: any;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { ok: false, raw };
+  }
+  if (!parsed || parsed.status === "error" || parsed.error) return { ok: false, raw };
+  const list: FrameFile[] = Array.isArray(parsed.frames) ? parsed.frames : [];
+  const out = new Map<number, Buffer>();
+  try {
+    const bufs = await Promise.all(
+      list.map((f) => readScratchPng(f.path, 20000 + 3000 * list.length)),
+    );
+    list.forEach((f, i) => {
+      const buf = bufs[i];
+      if (buf && typeof f.frame === "number") out.set(f.frame, buf);
+    });
+  } finally {
+    for (const f of list) {
+      try {
+        fs.unlinkSync(f.path);
+      } catch {
+        /* already gone */
+      }
+    }
+  }
+  if (list.length && typeof list[0].frame !== "number") {
+    return {
+      ok: false,
+      raw: JSON.stringify({
+        status: "error",
+        error:
+          "The bridge panel loaded in After Effects is older than this server and does not report frame numbers. Run install-modal-safe.ps1 and restart After Effects.",
+      }),
+    };
+  }
+  return {
+    ok: true,
+    compName: String(parsed.compName || ""),
+    compSize: Array.isArray(parsed.compSize) ? parsed.compSize : [],
+    region: Array.isArray(parsed.region) ? parsed.region : undefined,
+    frames: out,
+  };
+}
+
+server.tool(
+  "compare-frames",
+  "Check that a change did not alter the picture (or see exactly what it altered). action 'snapshot': render the given frames of a comp at native size and keep them under a name. Then edit the project. action 'compare': render the same frames again and compare them with the snapshot pixel by pixel; returns, per frame, the largest difference, the number of changed pixels and their bounding box, plus before | after | amplified-difference images for the most changed frames. Use it around refactors that must not change the look (baking expressions to keyframes, precomposing, reordering, cleaning a project) and to confirm that an intended change touched only what it should. Frames render with the comp's own motion blur setting. Snapshots are kept in the bridge folder, not in the project. action 'list' shows the snapshots, 'delete' removes one.",
+  {
+    action: z.enum(["snapshot", "compare", "list", "delete"]).describe("What to do."),
+    name: z
+      .string()
+      .optional()
+      .describe(
+        "Snapshot name: letters, digits, _ and -, up to 48 characters. Required except for 'list'.",
+      ),
+    comp: z
+      .union([z.string(), z.number().int().positive()])
+      .optional()
+      .describe(
+        "Composition name or 1-based index. Omit for the active comp; on 'compare' it defaults to the comp of the snapshot.",
+      ),
+    frames: z
+      .union([z.number().int(), z.array(z.number().int()).min(1).max(60)])
+      .optional()
+      .describe(
+        "Frame number(s) as shown in the timeline. Required for 'snapshot'; on 'compare' defaults to all frames of the snapshot.",
+      ),
+    region: z
+      .array(z.number())
+      .length(4)
+      .optional()
+      .describe(
+        "For 'snapshot': keep only [x, y, width, height] in comp pixels. 'compare' reuses the snapshot's region.",
+      ),
+    threshold: z
+      .number()
+      .int()
+      .min(0)
+      .max(255)
+      .optional()
+      .describe(
+        "Per-channel difference (0-255) treated as rounding noise (default 2). Use 0 for an exact match.",
+      ),
+    maxImages: z
+      .number()
+      .int()
+      .min(0)
+      .max(6)
+      .optional()
+      .describe("How many of the most changed frames to return as images (default 3)."),
+    timeoutMs: z
+      .number()
+      .int()
+      .positive()
+      .max(600000)
+      .optional()
+      .describe("How long to wait for the render, in milliseconds (default 120000)."),
+  },
+  async ({
+    action,
+    name,
+    comp,
+    frames,
+    region,
+    threshold = 2,
+    maxImages = 3,
+    timeoutMs = 120000,
+  }) => {
+    const text = (value: unknown, isError = false) => ({
+      content: [
+        {
+          type: "text" as const,
+          text: typeof value === "string" ? value : JSON.stringify(value, null, 2),
+        },
+      ],
+      isError,
+    });
+    try {
+      const root = snapshotRoot();
+      if (action === "list") {
+        const names = fs.existsSync(root)
+          ? fs.readdirSync(root).filter((n) => fs.existsSync(path.join(root, n, "meta.json")))
+          : [];
+        return text({
+          snapshots: names.map((n) => {
+            try {
+              const meta = JSON.parse(fs.readFileSync(path.join(root, n, "meta.json"), "utf8"));
+              return { name: n, comp: meta.comp, frames: meta.frames, created: meta.created };
+            } catch {
+              return { name: n };
+            }
+          }),
+        });
+      }
+      const safe = name ? safeSnapshotName(name) : null;
+      if (!safe) {
+        return text(
+          'name is required: letters, digits, _ and -, up to 48 characters (e.g. "before-bake").',
+          true,
+        );
+      }
+      const dir = path.join(root, safe);
+      const metaPath = path.join(dir, "meta.json");
+
+      if (action === "delete") {
+        if (!fs.existsSync(metaPath)) return text(`No snapshot named "${safe}".`, true);
+        fs.rmSync(dir, { recursive: true, force: true });
+        return text({ deleted: safe });
+      }
+
+      const wanted = frames === undefined ? undefined : Array.isArray(frames) ? frames : [frames];
+
+      if (action === "snapshot") {
+        if (!wanted) return text("frames is required for action 'snapshot'.", true);
+        const shot = await renderNativeFrames(comp, wanted, region, timeoutMs);
+        if (!shot.ok) return bridgeToolResult(shot.raw);
+        if (!shot.frames.size) return text("No frame could be read back from After Effects.", true);
+        fs.rmSync(dir, { recursive: true, force: true });
+        fs.mkdirSync(dir, { recursive: true });
+        const kept = [...shot.frames.keys()].sort((a, b) => a - b);
+        for (const f of kept) {
+          fs.writeFileSync(path.join(dir, snapshotFrameFile(f)), shot.frames.get(f) as Buffer);
+        }
+        const meta = {
+          comp: shot.compName,
+          compSize: shot.compSize,
+          region: shot.region ?? null,
+          frames: kept,
+          created: new Date().toISOString(),
+        };
+        fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
+        return text({
+          status: "success",
+          snapshot: safe,
+          ...meta,
+          next: `Make the change, then call compare-frames with action "compare" and name "${safe}".`,
+        });
+      }
+
+      // compare
+      if (!fs.existsSync(metaPath)) {
+        return text(`No snapshot named "${safe}". Take one first with action "snapshot".`, true);
+      }
+      const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
+      const list: number[] = (wanted ?? meta.frames).filter((f: number) => meta.frames.includes(f));
+      if (!list.length) {
+        return text(
+          `None of the requested frames are in snapshot "${safe}" (it has ${meta.frames.join(", ")}).`,
+          true,
+        );
+      }
+      const now = await renderNativeFrames(
+        comp ?? meta.comp,
+        list,
+        meta.region ?? undefined,
+        timeoutMs,
+      );
+      if (!now.ok) return bridgeToolResult(now.raw);
+
+      const rows: any[] = [];
+      const pictures: Array<{ frame: number; score: number; block: ContentBlock[] }> = [];
+      for (const f of list) {
+        const cur = now.frames.get(f);
+        if (!cur) {
+          rows.push({ frame: f, error: "could not be rendered now" });
+          continue;
+        }
+        const before = decodePng(fs.readFileSync(path.join(dir, snapshotFrameFile(f))));
+        const after = decodePng(cur);
+        const d = diffFrames(before, after, threshold);
+        if (!d.sameSize) {
+          rows.push({
+            frame: f,
+            changed: true,
+            error: `size changed: ${before.width}x${before.height} -> ${after.width}x${after.height}`,
+          });
+          continue;
+        }
+        rows.push({
+          frame: f,
+          changed: d.changedPixels > 0,
+          maxDiff: d.maxDiff,
+          changedPixels: d.changedPixels,
+          changedPercent: Math.round(d.changedShare * 100000) / 1000,
+          bbox: d.bbox,
+        });
+        if (d.bbox && d.changedPixels > 0) {
+          const image = encodePng(buildDiffImage(before, after, d.bbox));
+          pictures.push({
+            frame: f,
+            score: d.changedPixels,
+            block: [
+              {
+                type: "text",
+                text: `frame ${f}: before | after | difference x8, area [${d.bbox.join(", ")}]`,
+              },
+              { type: "image", data: image.toString("base64"), mimeType: "image/png" },
+            ],
+          });
+        }
+      }
+      const changedFrames = rows.filter((r) => r.changed || r.error).map((r) => r.frame);
+      const content: ContentBlock[] = [
+        {
+          type: "text",
+          text: JSON.stringify(
+            {
+              status: "success",
+              snapshot: safe,
+              comp: now.compName,
+              threshold,
+              identical: changedFrames.length === 0,
+              changedFrames,
+              frames: rows,
+            },
+            null,
+            2,
+          ),
+        },
+      ];
+      pictures
+        .sort((a, b) => b.score - a.score)
+        .slice(0, maxImages)
+        .forEach((p) => content.push(...p.block));
+      return { content };
+    } catch (error) {
+      return text(`Error comparing frames: ${String(error)}`, true);
+    }
+  },
+);
 
 server.tool(
   "contact-sheet",

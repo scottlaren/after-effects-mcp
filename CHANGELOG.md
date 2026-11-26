@@ -4,6 +4,30 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.0-modal-safe.1](https://github.com/scottlaren/after-effects-mcp/releases/tag/v1.14.0-modal-safe.1) (2026-11-26)
+
+First tagged release of the modal-safe fork. It makes the server easier to drive
+for an agent: clearer answers when something goes wrong, and tools to look closer.
+
+### Features
+
+* **execute-script:** a `hint` when a script returned nothing because it has no top-level `return`
+* **execute-script:** errors carry `scriptLine` and `source`, the failing line of the caller's script, instead of a line inside the bridge wrapper
+* **execute-script:** a syntax error lists likely ES3 causes: reserved words used as keys or names, `let`/`const`, arrow functions, template literals and others
+* **see-frame:** `frames` picks moments by timeline frame number; captions show the frame number
+* **see-frame:** `region` crops to an area of the comp, and `maxWidth` then zooms it up to 8x
+* **compare-frames:** new tool; keeps a named snapshot of frames and compares them with the current render pixel by pixel, with before / after / difference images
+* **bridge status:** a command that gets no answer now says why: After Effects is busy (with which command and for how long), the panel is paused, closed or not responding, or After Effects is not running. The last two answer in about two seconds instead of the full timeout, and the command is withdrawn
+* **check-bridge:** reports `bridgeState`
+
+### Bug Fixes
+
+* **see-frame:** a native-size capture no longer leaves the composition's motion blur switch changed
+
+### Upgrade
+
+Rebuild, run `install-modal-safe.ps1`, then restart After Effects and the MCP client: the panel and the bridge script changed.
+
 ## [1.13.0](https://github.com/a-y-ibrahim/after-effects-mcp/compare/v1.12.0...v1.13.0) (2026-08-15)
 
 

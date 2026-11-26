@@ -4,6 +4,8 @@
 
 export interface FrameFile {
   time: number;
+  /** Timeline frame number, when the bridge reports it. */
+  frame?: number;
   path: string;
   w?: number;
   h?: number;
@@ -130,6 +132,11 @@ export function gridLayout(count: number): { cols: number; rows: number } {
  * carries the inspect-comp JSON so the model reasons over pixels + DOM together.
  * `readBase64` reads a frame path and returns its base64 (injected for testing).
  */
+/** "frame 120 (t=2s)" when the frame number is known, otherwise "t=2s". */
+export function frameLabel(f: { time: number; frame?: number }): string {
+  return typeof f.frame === "number" ? `frame ${f.frame} (t=${f.time}s)` : `t=${f.time}s`;
+}
+
 export function buildFrameContent(
   compName: string,
   frames: FrameFile[],
@@ -146,11 +153,11 @@ export function buildFrameContent(
   for (const f of ok) {
     const b64 = readBase64(f.path);
     if (!b64) {
-      blocks.push({ type: "text", text: `(frame at t=${f.time}s could not be read)` });
+      blocks.push({ type: "text", text: `(frame at ${frameLabel(f)} could not be read)` });
       continue;
     }
     const dims = f.w && f.h ? ` ${f.w}x${f.h}` : "";
-    blocks.push({ type: "text", text: `${compName} @ t=${f.time}s${dims}` });
+    blocks.push({ type: "text", text: `${compName} @ ${frameLabel(f)}${dims}` });
     blocks.push({ type: "image", data: b64, mimeType: "image/png" });
   }
 
