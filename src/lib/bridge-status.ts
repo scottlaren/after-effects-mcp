@@ -104,7 +104,7 @@ export function classifyBridgeState(
   return {
     bridgeState: "not-picked-up",
     detail:
-      "The panel is alive and idle but did not take this command (it may have expired before dispatch). Nothing was changed; send it again.",
+      "The panel is idle now and returned nothing for this command; most likely it expired before After Effects could start it. Check the project before re-sending an edit.",
     mayStillRun: false,
   };
 }

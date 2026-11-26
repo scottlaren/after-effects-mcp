@@ -13,7 +13,7 @@ for an agent: clearer answers when something goes wrong, and tools to look close
 
 - **execute-script:** a `hint` when a script returned nothing because it has no top-level `return`
 - **execute-script:** errors carry `scriptLine` and `source`, the failing line of the caller's script, instead of a line inside the bridge wrapper
-- **execute-script:** a syntax error lists likely ES3 causes: reserved words used as keys or names, `let`/`const`, arrow functions, template literals and others
+- **execute-script:** a syntax error lists likely ES3 causes: reserved words used as keys or names, `let`, arrow functions, template literals and others
 - **see-frame:** `frames` picks moments by timeline frame number; captions show the frame number
 - **see-frame:** `region` crops to an area of the comp, and `maxWidth` then zooms it up to 8x
 - **compare-frames:** new tool; keeps a named snapshot of frames and compares them with the current render pixel by pixel, with before / after / difference images

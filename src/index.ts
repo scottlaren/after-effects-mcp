@@ -196,6 +196,9 @@ async function waitForBridgeResult(
   // up front, so it can't be clobbered by a later command during the await loop.
   const idToMatch = expectedId || lastCommandId || "";
   let presenceChecked = false;
+  // An earlier command seen occupying After Effects while this one waited.
+  let blockedBy = "";
+  let lastStatusRead = 0;
 
   while (Date.now() - start < timeoutMs) {
     if (fs.existsSync(resultPath)) {
@@ -252,10 +255,21 @@ async function waitForBridgeResult(
         });
       }
     }
+    if (Date.now() - lastStatusRead > 1000) {
+      lastStatusRead = Date.now();
+      const seen = readPanelStatus();
+      if (seen && seen.state === "running" && seen.commandId && seen.commandId !== idToMatch) {
+        blockedBy = seen.command || "unknown";
+      }
+    }
     await new Promise((r) => setTimeout(r, delay));
     delay = nextPollDelay(delay, pollMs);
   }
   const diagnosis = diagnoseBridge(idToMatch);
+  if (diagnosis.bridgeState === "not-picked-up" && blockedBy) {
+    diagnosis.bridgeState = "busy";
+    diagnosis.detail = `After Effects was busy with an earlier command (${blockedBy}) while this one waited, so it expired before it could start. Send it again.`;
+  }
   return JSON.stringify({
     error: `Timed out waiting for bridge result${expectedCommand ? ` for command '${expectedCommand}'` : ""}. ${diagnosis.detail}`,
     bridgeState: diagnosis.bridgeState,
@@ -3626,7 +3640,7 @@ server.tool(
 
 server.tool(
   "execute-script",
-  'Run ARBITRARY ExtendScript (the After Effects scripting DOM) inside After Effects and return the result. Every call requires a specific description of what the script will inspect or change. First read historyLanguage with check-bridge(settingsOnly: true): use English for en (default) or Russian for ru, regardless of the conversation language. Write a natural action phrase, never "Run script" or "Запустить скрипт". This is the most powerful tool: use it for anything the dedicated tools do not cover - masks, track mattes, parenting, 3D layers/cameras/lights, blending modes, precomposing, time remapping, layer styles, text animators, puppet pins, importing/replacing footage, batch edits across many layers, project-wide changes, etc. Your code runs as the body of a function, so use `return <value>;` to send data back, and return only JSON-serializable values (numbers, strings, arrays, plain objects). The whole script already runs inside one undo group, so do NOT call app.beginUndoGroup yourself. Use `app` and `app.project` to reach everything. On error you get back the message, scriptLine (the line of YOUR script) and its source text; a syntax error also lists likely ES3 causes (reserved words as keys, let/const, arrow functions). Example script: "var c = app.project.activeItem; return { name: c.name, layers: c.numLayers };"',
+  'Run ARBITRARY ExtendScript (the After Effects scripting DOM) inside After Effects and return the result. Every call requires a specific description of what the script will inspect or change. First read historyLanguage with check-bridge(settingsOnly: true): use English for en (default) or Russian for ru, regardless of the conversation language. Write a natural action phrase, never "Run script" or "Запустить скрипт". This is the most powerful tool: use it for anything the dedicated tools do not cover - masks, track mattes, parenting, 3D layers/cameras/lights, blending modes, precomposing, time remapping, layer styles, text animators, puppet pins, importing/replacing footage, batch edits across many layers, project-wide changes, etc. Your code runs as the body of a function, so use `return <value>;` to send data back, and return only JSON-serializable values (numbers, strings, arrays, plain objects). The whole script already runs inside one undo group, so do NOT call app.beginUndoGroup yourself. Use `app` and `app.project` to reach everything. On error you get back the message, scriptLine (the line of YOUR script) and its source text; a syntax error also lists likely ES3 causes (reserved words as keys, let, arrow functions). Example script: "var c = app.project.activeItem; return { name: c.name, layers: c.numLayers };"',
   {
     script: z
       .string()

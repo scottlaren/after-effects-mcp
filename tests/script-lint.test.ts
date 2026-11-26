@@ -44,7 +44,8 @@ describe("lintExtendScript", () => {
     const found = lintExtendScript(
       "let a = 1;\nconst b = [1, 2,];\nvar f = (x) => x;\nvar s = `t`;\nfor (var i of b) {}",
     ).join("\n");
-    expect(found).toMatch(/line 1: let\/const/);
+    expect(found).toMatch(/line 1: let is not/);
+    expect(found).not.toMatch(/const/);
     expect(found).toMatch(/line 2: a trailing comma/);
     expect(found).toMatch(/line 3: arrow functions/);
     expect(found).toMatch(/line 4: template literals/);
@@ -82,6 +83,20 @@ describe("annotateScriptResult", () => {
     expect(out.source).toBe("var l = c.layer(99);");
     expect(out.where).toMatch(/inline script/);
   });
+  it("treats a numeric file name (eval) as the inline script", () => {
+    const raw = JSON.stringify({
+      status: "error",
+      error: "SyntaxError: Illegal use of reserved word",
+      line: 3,
+      fileName: "112",
+    });
+    const out = JSON.parse(
+      annotateScriptResult("var c = 1;\nvar o = { in: 1, long: 2 };\nreturn o;", raw),
+    );
+    expect(out.scriptLine).toBe(2);
+    expect(out.source).toBe("var o = { in: 1, long: 2 };");
+    expect(out.possibleCauses.length).toBe(2);
+  });
   it("leaves lines of other files alone", () => {
     const raw = JSON.stringify({
       status: "error",
@@ -100,8 +115,8 @@ describe("annotateScriptResult", () => {
       line: 2,
       fileName: null,
     });
-    const out = JSON.parse(annotateScriptResult("const a = 1;\nreturn a;", raw));
-    expect(out.possibleCauses.join(" ")).toMatch(/let\/const/);
+    const out = JSON.parse(annotateScriptResult("let a = 1;\nreturn a;", raw));
+    expect(out.possibleCauses.join(" ")).toMatch(/let is not/);
   });
   it("passes through non-JSON and timeouts", () => {
     expect(annotateScriptResult("x", "not json")).toBe("not json");

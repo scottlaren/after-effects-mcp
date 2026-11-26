@@ -185,7 +185,7 @@ export function lintExtendScript(script: string): string[] {
   }
 
   const modern: Array<[RegExp, string]> = [
-    [/\b(let|const)\s+[A-Za-z_$[{]/g, "let/const is not ES3; use var"],
+    [/\blet\s+[A-Za-z_$[{]/g, "let is not supported; use var"],
     [/=>/g, "arrow functions are not ES3; use function () {}"],
     [/`/g, "template literals are not ES3; concatenate strings"],
     [/\bfor\s*\([^)]*\sof\s/g, "for...of is not ES3; use an index loop"],
@@ -230,7 +230,9 @@ export function annotateScriptResult(script: string, raw: string): string {
   } else {
     const fileName = typeof parsed.fileName === "string" ? parsed.fileName : null;
     const inline =
-      fileName === null || fileName.replace(/\\/g, "/").split("/").pop() === BRIDGE_FILE;
+      fileName === null ||
+      /^\d+$/.test(fileName) || // a script compiled by eval has a number for a name
+      fileName.replace(/\\/g, "/").split("/").pop() === BRIDGE_FILE;
     const lines = script.split(/\r\n|\r|\n/);
     if (inline && typeof parsed.line === "number") {
       const scriptLine = parsed.line - 1;
