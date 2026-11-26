@@ -98,13 +98,13 @@ controls new descriptions; generic labels such as "Run script" are rejected.
 
 ## Rendering
 
-| Tool                  | Purpose                                                                                            |
-| --------------------- | -------------------------------------------------------------------------------------------------- |
-| `add-to-render-queue` | Add a composition to the render queue and configure its output.                                    |
-| `render-queue`        | List, clear, or remove items from the render queue.                                                |
-| `start-render`        | Render all queued items. Blocks After Effects until finished.                                      |
-| `render-aerender`     | Render a comp to a file in the background via `aerender` (no UI freeze). Requires a saved project. |
-| `render-status`       | Check background `aerender` renders: which are running/finished, plus each log tail.               |
+| Tool                  | Purpose                                                                                                                           |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `add-to-render-queue` | Add a composition to the render queue and configure its output.                                                                   |
+| `render-queue`        | List, clear, or remove items from the render queue.                                                                               |
+| `start-render`        | Render all queued items. Blocks After Effects until finished.                                                                     |
+| `render-aerender`     | Render a comp to a file in the background via `aerender` (no UI freeze). Requires a saved project.                                |
+| `render-status`       | Check background `aerender` renders: which are running, finished or failed (with the reason and frames done), plus each log tail. |
 
 ## Power
 

@@ -32,6 +32,7 @@ import {
   type ContentBlock,
 } from "./lib/see-frame.js";
 import { annotateScriptResult } from "./lib/script-lint.js";
+import { renderOutcome, type RenderOutcome } from "./lib/render-outcome.js";
 import {
   classifyBridgeState,
   STATUS_FILE,
@@ -60,7 +61,7 @@ import {
 
 const server = new McpServer({
   name: "AfterEffectsServer",
-  version: "1.14.0-modal-safe.1",
+  version: "1.14.1-modal-safe.1",
 });
 
 const __filename = fileURLToPath(import.meta.url);
@@ -2669,7 +2670,7 @@ server.tool(
 
 // Bump this whenever the bridge .jsx protocol changes, and keep it in sync with
 // BRIDGE_VERSION in src/scripts/mcp-bridge-auto.jsx. check-bridge warns on mismatch.
-const EXPECTED_BRIDGE_VERSION = "1.14.0-modal-safe.1";
+const EXPECTED_BRIDGE_VERSION = "1.14.1-modal-safe.1";
 
 server.tool(
   "check-bridge",
@@ -3691,7 +3692,7 @@ server.tool(
 
 server.tool(
   "see-frame",
-  "SEE what a composition actually looks like: render one or more frames to images and return them so you can visually verify and self-correct (make a change, look, fix). Use this after edits to catch problems the DOM does not reveal - clipped or empty text, blown-out glow, off-frame layers, wrong colors, or Arabic/RTL text that did not shape correctly. Select the comp by name or 1-based index, or leave empty for the active comp. Pick moments by frame number (frames, as the timeline shows them) or by time in seconds (times). Pass region [x, y, width, height] in comp pixels to crop to a detail; maxWidth then sets the width of the crop, so a small region is zoomed in (up to 8x, vectors and text stay sharp). Returns downscaled preview images by default (maxWidth 512) to keep it fast and cheap; pass maxWidth 0 for native resolution. The comp itself is not changed. Note: a still is a still - time-based effects like motion blur may look different from playback.",
+  "SEE what a composition actually looks like: render one or more frames to images and return them so you can visually verify and self-correct (make a change, look, fix). Use this after edits to catch problems the DOM does not reveal - clipped or empty text, blown-out glow, off-frame layers, wrong colors, or Arabic/RTL text that did not shape correctly. Select the comp by name or 1-based index, or leave empty for the active comp. Pick moments by frame number (frames, as the timeline shows them) or by time in seconds (times). Pass region [x, y, width, height] in comp pixels to crop to a detail; maxWidth then sets the width of the crop, so a small region is zoomed in (up to 8x, vectors and text stay sharp; blur and other effects sized in pixels keep their size and so look weaker when enlarged - judge them at maxWidth 0). Returns downscaled preview images by default (maxWidth 512) to keep it fast and cheap; pass maxWidth 0 for native resolution. The comp itself is not changed. Note: a still is a still - time-based effects like motion blur may look different from playback.",
   {
     comp: z
       .union([z.string(), z.number().int().positive()])
@@ -4477,8 +4478,39 @@ interface RenderJob {
   output: string;
   logPath: string;
   startedAt: string;
+  /** Frames asked for, when the caller gave both ends of the range. */
+  expectedFrames?: number;
+  /** How the process ended, once the server has seen it end. */
+  ended?: { code: number | null; signal: string | null };
 }
 const runningRenders = new Map<number, RenderJob>();
+
+// Gather what can be checked about a render and let renderOutcome judge it.
+function judgeRenderJob(job: RenderJob): RenderOutcome {
+  let log = "";
+  try {
+    log = fs.readFileSync(job.logPath, "utf8");
+  } catch {
+    /* nothing logged yet */
+  }
+  let outputFile: { size: number; mtimeMs: number } | null = null;
+  try {
+    const stat = fs.statSync(job.output);
+    outputFile = { size: stat.size, mtimeMs: stat.mtimeMs };
+  } catch {
+    /* not written */
+  }
+  return renderOutcome({
+    running: !job.ended && pidAlive(job.pid),
+    exitCode: job.ended ? job.ended.code : undefined,
+    signal: job.ended ? job.ended.signal : undefined,
+    log,
+    outputPath: job.output,
+    outputFile,
+    startedAtMs: Date.parse(job.startedAt),
+    expectedFrames: job.expectedFrames,
+  });
+}
 
 async function getOpenProjectPath(): Promise<string | null> {
   const raw = await sendBridgeCommand("getProjectInfo", {}, 6000, 250);
@@ -4621,32 +4653,48 @@ server.tool(
       const logPath = path.join(getAETempDir(), `aerender-${nextCommandId()}.log`);
       const out = fs.openSync(logPath, "a");
       const child = spawn(aerenderPath, args, { detached: true, stdio: ["ignore", out, out] });
-      child.unref();
       const pid = child.pid || -1;
-      if (pid > 0)
-        runningRenders.set(pid, {
-          pid,
-          comp: p.compName,
-          output: p.outputPath,
-          logPath,
-          startedAt: new Date().toISOString(),
-        });
+      const job: RenderJob = {
+        pid,
+        comp: p.compName,
+        output: p.outputPath,
+        logPath,
+        startedAt: new Date().toISOString(),
+        expectedFrames:
+          p.startFrame !== undefined && p.endFrame !== undefined && p.endFrame >= p.startFrame
+            ? p.endFrame - p.startFrame + 1
+            : undefined,
+      };
+      // Remember how the process ended: without it a crash looks like a finished render.
+      child.once("exit", (code, signal) => {
+        job.ended = { code, signal };
+      });
+      child.once("error", (err) => {
+        if (!job.ended) job.ended = { code: -1, signal: null };
+        console.error(`aerender could not be run: ${String(err)}`);
+      });
+      child.unref();
+      if (pid > 0) runningRenders.set(pid, job);
 
       if (p.waitMs && p.waitMs > 0) {
         const start = Date.now();
         while (Date.now() - start < p.waitMs) {
-          if (!pidAlive(pid)) break;
+          if (job.ended || !pidAlive(pid)) break;
           await new Promise((r) => setTimeout(r, 1000));
         }
-        const alive = pidAlive(pid);
-        if (!alive) runningRenders.delete(pid);
+        const outcome = judgeRenderJob(job);
+        if (outcome.state !== "running") runningRenders.delete(pid);
         return {
+          isError: outcome.state === "failed",
           content: [
             {
               type: "text",
               text: JSON.stringify(
                 {
-                  status: alive ? "running" : "finished",
+                  status: outcome.state,
+                  ...(outcome.error ? { error: outcome.error } : {}),
+                  framesDone: outcome.framesDone,
+                  ...(outcome.percent !== undefined ? { percent: outcome.percent } : {}),
                   pid,
                   comp: p.compName,
                   output: p.outputPath,
@@ -4695,7 +4743,7 @@ server.tool(
 
 server.tool(
   "render-status",
-  "Check background aerender renders started with render-aerender: which are still running, which finished, and the tail of each render log.",
+  "Check background aerender renders started with render-aerender: which are still running (with frames done), which finished, which failed and why, and the tail of each render log. A render counts as finished only when aerender ended cleanly and really wrote the output file.",
   {
     pid: z
       .number()
@@ -4729,14 +4777,17 @@ server.tool(
         };
       }
       const renders = jobs.map((j) => {
-        const alive = pidAlive(j.pid);
-        if (!alive) runningRenders.delete(j.pid);
+        const outcome = judgeRenderJob(j);
+        if (outcome.state !== "running") runningRenders.delete(j.pid);
         return {
           pid: j.pid,
           comp: j.comp,
           output: j.output,
           startedAt: j.startedAt,
-          state: alive ? "running" : "finished",
+          state: outcome.state,
+          ...(outcome.error ? { error: outcome.error } : {}),
+          framesDone: outcome.framesDone,
+          ...(outcome.percent !== undefined ? { percent: outcome.percent } : {}),
           logTail: tailFile(j.logPath),
         };
       });
